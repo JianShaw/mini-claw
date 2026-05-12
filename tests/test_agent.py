@@ -5,11 +5,16 @@ from __future__ import annotations
 from claw.agent import MiniClaw
 from claw.channels.local import LocalDelivery
 from claw.runner import EchoAgentRunner
+from claw.session import InMemorySessionStore
 from claw.types import StreamChunk
 
 
 def _make_claw(delivery: LocalDelivery) -> MiniClaw:
-    return MiniClaw(delivery=delivery, agent_runner=EchoAgentRunner())
+    return MiniClaw(
+        delivery=delivery,
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+    )
 
 
 def test_mini_claw_reply_keeps_existing_echo_behavior() -> None:
@@ -34,7 +39,7 @@ async def test_mini_claw_preserves_history_across_messages() -> None:
     claw = _make_claw(delivery)
     await claw.areply("first")
     await claw.areply("second")
-    session = await claw.gateway._session_store.get("local:local-app:local-user")
+    session = await claw.gateway._session_store.get_active("local:local-app:local-user")
     assert session is not None
     assert len(session.history) == 4
 
@@ -60,7 +65,7 @@ async def test_mini_claw_areply_stream_saves_history() -> None:
     claw = _make_claw(delivery)
     async for _ in claw.areply_stream("hello"):
         pass
-    session = await claw.gateway._session_store.get("local:local-app:local-user")
+    session = await claw.gateway._session_store.get_active("local:local-app:local-user")
     assert session is not None
     assert len(session.history) == 2
 
@@ -73,3 +78,52 @@ async def test_mini_claw_areply_stream_routes_through_delivery() -> None:
         pass
     assert len(delivery.sent) == 1
     assert delivery.sent[0][1].text == "echo: hello"
+
+
+# --- 会话管理便捷方法测试 ---
+
+
+async def test_mini_claw_new_session() -> None:
+    """new_session 应创建新会话并激活。"""
+    claw = _make_claw(LocalDelivery())
+    await claw.areply("first")
+    first_id = await claw.get_active_session_id()
+
+    new = await claw.new_session()
+    assert new.session_id != first_id
+    assert await claw.get_active_session_id() == new.session_id
+
+
+async def test_mini_claw_list_sessions() -> None:
+    """list_sessions 应列出所有会话。"""
+    claw = _make_claw(LocalDelivery())
+    await claw.areply("first")
+    await claw.new_session()
+
+    sessions = await claw.list_sessions()
+    assert len(sessions) == 2
+
+
+async def test_mini_claw_select_session() -> None:
+    """select_session 应切换活跃会话。"""
+    claw = _make_claw(LocalDelivery())
+    await claw.areply("first")
+    first_id = await claw.get_active_session_id()
+    new = await claw.new_session()
+
+    result = await claw.select_session(first_id)
+    assert result is not None
+    assert await claw.get_active_session_id() == first_id
+
+
+async def test_mini_claw_delete_session() -> None:
+    """delete_session 应删除指定会话。"""
+    claw = _make_claw(LocalDelivery())
+    await claw.areply("first")
+    first_id = await claw.get_active_session_id()
+    new = await claw.new_session()
+
+    await claw.delete_session(first_id)
+    sessions = await claw.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0].session_id == new.session_id

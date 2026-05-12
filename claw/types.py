@@ -62,6 +62,7 @@ class ChatMessage:
     """对话历史中的单条消息。"""
     role: Role
     content: str
+    ts: int | None = None
 
 
 @dataclass(slots=True)
@@ -81,6 +82,7 @@ class Session:
     agent_id: str
     history: list[ChatMessage] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    summary: str | None = None
 
 
 @dataclass(slots=True)

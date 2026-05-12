@@ -34,7 +34,7 @@ class DeepSeekAgentRunner:
     async def run(self, session: Session, message: InboundMessage) -> AgentReply:
         session.history.append(ChatMessage(role="user", content=message.text))
 
-        messages = [{"role": m.role, "content": m.content} for m in session.history]
+        messages = self._build_messages(session)
 
         kwargs: dict = {"model": self.model, "messages": messages}
         if self.thinking:
@@ -52,11 +52,22 @@ class DeepSeekAgentRunner:
             metadata["reasoning"] = reasoning
         return AgentReply(text=text, metadata=metadata)
 
+    def _build_messages(self, session: Session) -> list[dict[str, str]]:
+        """构建发给 LLM 的 messages 列表，有 summary 时在开头插入 system message。"""
+        messages: list[dict[str, str]] = []
+        if session.summary:
+            messages.append({
+                "role": "system",
+                "content": f"以下是之前对话的摘要：\n{session.summary}",
+            })
+        messages.extend({"role": m.role, "content": m.content} for m in session.history)
+        return messages
+
     async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]:
         """流式版本：通过 stream=True 调用 API，逐 chunk yield StreamChunk。
         thinking 模式下先产出 thinking chunk，再产出 content chunk。assistant history 由调用方追加。"""
         session.history.append(ChatMessage(role="user", content=message.text))
-        messages = [{"role": m.role, "content": m.content} for m in session.history]
+        messages = self._build_messages(session)
 
         kwargs: dict = {"model": self.model, "messages": messages, "stream": True}
         if self.thinking:

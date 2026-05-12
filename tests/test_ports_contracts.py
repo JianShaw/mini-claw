@@ -53,11 +53,46 @@ class FakeDedupeStore:
 
 class FakeSessionStore:
     """满足 SessionStore Protocol 的最小实现。"""
+    def __init__(self) -> None:
+        self._sessions: dict[str, Session] = {}
+        self._active: dict[str, str] = {}
+
     async def get(self, session_key: str) -> Session | None:
+        active_id = self._active.get(session_key)
+        if active_id:
+            return self._sessions.get(active_id)
         return None
 
     async def save(self, session: Session) -> None:
-        pass
+        self._sessions[session.session_id] = session
+        if session.session_key not in self._active:
+            self._active[session.session_key] = session.session_id
+
+    async def get_by_id(self, session_id: str) -> Session | None:
+        return self._sessions.get(session_id)
+
+    async def delete(self, session_id: str) -> None:
+        session = self._sessions.pop(session_id, None)
+        if session:
+            peer_key = session.session_key
+            if self._active.get(peer_key) == session_id:
+                remaining = [s for s in self._sessions.values() if s.session_key == peer_key]
+                if remaining:
+                    self._active[peer_key] = remaining[-1].session_id
+                else:
+                    del self._active[peer_key]
+
+    async def list_sessions(self, peer_key: str) -> list[Session]:
+        return [s for s in self._sessions.values() if s.session_key == peer_key]
+
+    async def get_active(self, peer_key: str) -> Session | None:
+        active_id = self._active.get(peer_key)
+        if active_id:
+            return self._sessions.get(active_id)
+        return None
+
+    async def set_active(self, peer_key: str, session_id: str) -> None:
+        self._active[peer_key] = session_id
 
 
 class FakeAgentRunner:

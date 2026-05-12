@@ -13,6 +13,16 @@ from claw.types import StreamChunk
 _THINK_PREFIX = "\033[90m[think] "
 _THINK_SUFFIX = "\033[0m"
 
+_COMMANDS_HELP = """\
+Commands:
+  /new       - 创建新会话
+  /sessions  - 列出所有会话
+  /select ID - 切换到指定会话
+  /delete ID - 删除指定会话
+  /compact   - 压缩当前会话上下文
+  /help      - 显示帮助
+  /exit      - 退出"""
+
 
 class _ChunkPrinter:
     """流式 chunk 打印器：跟踪 thinking↔content 状态切换，
@@ -40,12 +50,67 @@ class _ChunkPrinter:
             self._in_thinking = False
 
 
+async def _handle_command(text: str, claw: MiniClaw) -> bool:
+    """处理会话管理命令，返回 True 表示已处理（不需要发送给 Agent）。"""
+    active_id = await claw.get_active_session_id()
+
+    if text == "/new":
+        session = await claw.new_session()
+        print(f"New session: {session.session_id}")
+        return True
+
+    if text == "/sessions":
+        sessions = await claw.list_sessions()
+        if not sessions:
+            print("No sessions.")
+        else:
+            for s in sessions:
+                marker = " *" if s.session_id == active_id else ""
+                print(f"  {s.session_id}{marker}")
+        return True
+
+    if text.startswith("/select"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            print("Usage: /select <session_id>")
+        else:
+            result = await claw.select_session(parts[1])
+            if result:
+                print(f"Switched to {result.session_id}")
+            else:
+                print(f"Session {parts[1]} not found")
+        return True
+
+    if text.startswith("/delete"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            print("Usage: /delete <session_id>")
+        else:
+            await claw.delete_session(parts[1])
+            print(f"Deleted {parts[1]}")
+        return True
+
+    if text == "/compact":
+        summary = await claw.compact_session()
+        if summary is None:
+            print("No active session or empty history.")
+        else:
+            print(f"Compacted. Summary:\n  {summary}")
+        return True
+
+    if text == "/help":
+        print(_COMMANDS_HELP)
+        return True
+
+    return False
+
+
 async def run(claw: MiniClaw | None = None) -> None:
     load_dotenv()
     claw = claw or MiniClaw()
 
     print("Mini Claw chat")
-    print("Type /exit to quit.")
+    print("Type /help for commands, /exit to quit.")
 
     while True:
         text = input("you> ").strip()
@@ -53,6 +118,10 @@ async def run(claw: MiniClaw | None = None) -> None:
             continue
         if text in {"/exit", "/quit"}:
             break
+
+        # 会话管理命令拦截
+        if text.startswith("/") and await _handle_command(text, claw):
+            continue
 
         print("claw> ", end="", flush=True)
         printer = _ChunkPrinter()

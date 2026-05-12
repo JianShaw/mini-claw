@@ -9,10 +9,10 @@ from claw.channels.local import LocalAdapter, LocalTransport
 from claw.gateway import RuntimeGateway
 from claw.processor import ChannelProcessor, InMemoryDedupeStore
 from claw.deepseek import DeepSeekAgentRunner
-from claw.ports import AgentRunner
-from claw.session import InMemorySessionStore
+from claw.ports import AgentRunner, SessionStore
+from claw.session import JsonlSessionStore
 from claw.ports import Delivery
-from claw.types import AgentReply, PlatformEvent, StreamChunk
+from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
 
 
 class MiniClaw:
@@ -30,12 +30,14 @@ class MiniClaw:
         *,
         agent_runner: AgentRunner | None = None,
         api_key: str | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
         runner = agent_runner or DeepSeekAgentRunner(api_key=api_key)
+        self._session_store = session_store or JsonlSessionStore()
         self.gateway = RuntimeGateway(
-            session_store=InMemorySessionStore(),
+            session_store=self._session_store,
             agent_runner=runner,
             delivery=self.delivery,
         )
@@ -44,6 +46,11 @@ class MiniClaw:
             gateway=self.gateway,
             dedupe_store=InMemoryDedupeStore(),
         )
+
+    def _routing_message(self, text: str = "") -> InboundMessage:
+        """构造一条 InboundMessage 用于获取路由字段（channel/account_id/peer_id）。"""
+        event: PlatformEvent = self.transport.receive(text or "_")
+        return LocalAdapter().to_inbound_message(event)
 
     def reply(self, text: str) -> AgentReply:
         """同步接口，供 CLI 使用。"""
@@ -61,9 +68,44 @@ class MiniClaw:
         async for chunk in self.processor.process_stream(event):
             yield chunk
 
+    # --- 会话管理便捷方法 ---
+
+    async def new_session(self) -> Session:
+        """创建新会话并激活。"""
+        msg = self._routing_message()
+        return await self.gateway.create_new_session(msg)
+
+    async def list_sessions(self) -> list[Session]:
+        """列出当前 peer 下的所有会话。"""
+        msg = self._routing_message()
+        return await self.gateway.list_sessions(msg)
+
+    async def select_session(self, session_id: str) -> Session | None:
+        """切换到指定会话。"""
+        msg = self._routing_message()
+        return await self.gateway.select_session(msg, session_id)
+
+    async def delete_session(self, session_id: str) -> None:
+        """删除指定会话。"""
+        msg = self._routing_message()
+        return await self.gateway.delete_session(msg, session_id)
+
+    async def compact_session(self) -> str | None:
+        """压缩当前会话的上下文，返回生成的摘要。"""
+        msg = self._routing_message()
+        return await self.gateway.compact_session(msg)
+
+    async def get_active_session_id(self) -> str | None:
+        """获取当前活跃会话的 ID。"""
+        msg = self._routing_message()
+        session = await self._session_store.get_active(
+            f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
+        )
+        return session.session_id if session else None
+
 
 def _default_delivery() -> Delivery:
-    """默认使用 JsonlDelivery 将聊天记录持久化到 data/ 目录。"""
-    from claw.channels.local import JsonlDelivery
+    """默认使用 LocalDelivery，会话持久化由 JsonlSessionStore 接管。"""
+    from claw.channels.local import LocalDelivery
 
-    return JsonlDelivery(data_dir="data")
+    return LocalDelivery()

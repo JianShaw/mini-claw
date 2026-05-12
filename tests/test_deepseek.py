@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from claw.deepseek import DeepSeekAgentRunner
 from claw.session import create_session
-from claw.types import InboundMessage, StreamChunk
+from claw.types import ChatMessage, InboundMessage, StreamChunk
 
 
 def _msg(text: str = "hello") -> InboundMessage:
@@ -122,3 +122,35 @@ async def test_deepseek_stream_empty_chunks_skipped() -> None:
 
     assert len(result) == 1
     assert result[0].text == "real"
+
+
+# --- _build_messages with summary 测试 ---
+
+
+async def test_build_messages_includes_summary_as_system() -> None:
+    """session 有 summary 时 _build_messages 应在开头插入 system message。"""
+    runner = DeepSeekAgentRunner(api_key="test", thinking=False)
+
+    session = create_session(_msg())
+    session.summary = "之前讨论了排序算法"
+    session.history.append(ChatMessage(role="user", content="继续"))
+    session.history.append(ChatMessage(role="assistant", content="好的"))
+
+    messages = runner._build_messages(session)
+    assert len(messages) == 3
+    assert messages[0]["role"] == "system"
+    assert "排序算法" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert messages[2]["role"] == "assistant"
+
+
+async def test_build_messages_without_summary_no_system() -> None:
+    """session 没有 summary 时 _build_messages 不插入 system message。"""
+    runner = DeepSeekAgentRunner(api_key="test", thinking=False)
+
+    session = create_session(_msg())
+    session.history.append(ChatMessage(role="user", content="hello"))
+
+    messages = runner._build_messages(session)
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"

@@ -7,7 +7,7 @@ from typing import Any
 
 from claw.ports import AgentRunner, Delivery, SessionStore
 from claw.session import build_session_key, create_session
-from claw.types import AgentReply, ChatMessage, InboundMessage, StreamChunk
+from claw.types import AgentReply, ChatMessage, InboundMessage, Session, StreamChunk
 
 
 class RuntimeGateway:
@@ -29,23 +29,26 @@ class RuntimeGateway:
         self._delivery = delivery
         self._default_agent_id = default_agent_id
 
-    async def handle_inbound_message(self, message: InboundMessage) -> AgentReply:
-        # 1. 根据 session_key 查找已有会话，没有则新建
-        session_key = build_session_key(message)
-        session = await self._session_store.get(session_key)
+    def _peer_key(self, message: InboundMessage) -> str:
+        return build_session_key(message)
+
+    async def _get_or_create_session(self, message: InboundMessage) -> Session:
+        """获取活跃 session，没有则创建并激活。"""
+        peer_key = self._peer_key(message)
+        session = await self._session_store.get_active(peer_key)
         if session is None:
             session = create_session(message, agent_id=self._default_agent_id)
+            await self._session_store.save(session)
+        return session
 
-        # 2. 调用 Agent 生成回复（Runner 会往 session.history 追加记录）
+    async def handle_inbound_message(self, message: InboundMessage) -> AgentReply:
+        session = await self._get_or_create_session(message)
+
+        # AgentRunner 会往 session.history 追加记录
         reply = await self._agent_runner.run(session, message)
 
-        # 3. 将 session_id 写入 message metadata，供 Delivery 使用
         message.metadata["session_id"] = session.session_id
-
-        # 4. 保存更新后的会话状态
         await self._session_store.save(session)
-
-        # 5. 通过 Delivery 投递回复
         await self._delivery.send(message, reply)
 
         return reply
@@ -53,10 +56,7 @@ class RuntimeGateway:
     async def handle_stream(self, message: InboundMessage) -> AsyncIterator[StreamChunk]:
         """流式处理：yield StreamChunk，流结束后保存完整 assistant message 并投递。
         thinking 内容不写入 history，但包含在 Delivery 的 AgentReply.metadata 中。"""
-        session_key = build_session_key(message)
-        session = await self._session_store.get(session_key)
-        if session is None:
-            session = create_session(message, agent_id=self._default_agent_id)
+        session = await self._get_or_create_session(message)
 
         full_text = ""
         full_thinking = ""
@@ -75,3 +75,90 @@ class RuntimeGateway:
         if full_thinking:
             metadata["reasoning"] = full_thinking
         await self._delivery.send(message, AgentReply(text=full_text, metadata=metadata))
+
+    # --- 会话管理方法 ---
+
+    async def create_new_session(self, message: InboundMessage) -> Session:
+        """创建新 session 并激活。"""
+        session = create_session(message, agent_id=self._default_agent_id)
+        await self._session_store.save(session)
+        await self._session_store.set_active(
+            self._peer_key(message), session.session_id
+        )
+        return session
+
+    async def list_sessions(self, message: InboundMessage) -> list[Session]:
+        """列出 peer 下的所有 session。"""
+        return await self._session_store.list_sessions(self._peer_key(message))
+
+    async def select_session(
+        self, message: InboundMessage, session_id: str
+    ) -> Session | None:
+        """切换活跃 session，返回切换后的 session。仅允许切换同 peer 下的 session。"""
+        session = await self._session_store.get_by_id(session_id)
+        if session is None:
+            return None
+        # 归属校验：session 必须属于当前 peer
+        if session.session_key != self._peer_key(message):
+            return None
+        await self._session_store.set_active(
+            self._peer_key(message), session_id
+        )
+        return session
+
+    async def delete_session(
+        self, message: InboundMessage, session_id: str
+    ) -> None:
+        """删除指定 session。"""
+        await self._session_store.delete(session_id)
+
+    async def compact_session(self, message: InboundMessage) -> str | None:
+        """压缩当前活跃 session 的上下文：调用 LLM 生成摘要，清空 history。
+
+        返回生成的摘要文本，如果 session 为空或不存在则返回 None。
+        原始 JSONL 记录不会被删除（由 JsonlSessionStore 保证）。
+        """
+        peer_key = self._peer_key(message)
+        session = await self._session_store.get_active(peer_key)
+        if session is None or not session.history:
+            return None
+
+        # 构建摘要 prompt
+        history_text = "\n".join(
+            f"{m.role}: {m.content}" for m in session.history
+        )
+        existing = f"已有摘要：\n{session.summary}\n\n" if session.summary else ""
+        prompt = (
+            f"{existing}请总结以下对话的关键信息，保留重要的事实和上下文：\n\n"
+            f"{history_text}"
+        )
+
+        # 用临时 session 调用 AgentRunner 生成摘要
+        temp_session = Session(
+            session_id="temp",
+            session_key="temp",
+            channel=session.channel,
+            account_id=session.account_id,
+            peer_id=session.peer_id,
+            sender_id=session.sender_id,
+            agent_id=session.agent_id,
+        )
+        temp_msg = InboundMessage(
+            channel=session.channel,
+            account_id=session.account_id,
+            peer_id=session.peer_id,
+            sender_id=session.sender_id,
+            message_id="compact",
+            text=prompt,
+            timestamp=0,
+            message_type="text",
+            raw=None,
+        )
+        reply = await self._agent_runner.run(temp_session, temp_msg)
+
+        # 更新 session：设置摘要，清空 history
+        session.summary = reply.text
+        session.history = []
+        await self._session_store.save(session)
+
+        return reply.text
