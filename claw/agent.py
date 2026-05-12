@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
 from claw.channels.local import LocalAdapter, LocalTransport
 from claw.gateway import RuntimeGateway
@@ -11,7 +12,7 @@ from claw.deepseek import DeepSeekAgentRunner
 from claw.ports import AgentRunner
 from claw.session import InMemorySessionStore
 from claw.ports import Delivery
-from claw.types import AgentReply, PlatformEvent
+from claw.types import AgentReply, PlatformEvent, StreamChunk
 
 
 class MiniClaw:
@@ -53,6 +54,12 @@ class MiniClaw:
         event: PlatformEvent = self.transport.receive(text)
         reply: AgentReply | None = await self.processor.process(event)
         return reply if reply is not None else AgentReply(text="")
+
+    async def areply_stream(self, text: str) -> AsyncIterator[StreamChunk]:
+        """流式异步接口：通过流式链路逐步返回 StreamChunk。"""
+        event: PlatformEvent = self.transport.receive(text)
+        async for chunk in self.processor.process_stream(event):
+            yield chunk
 
 
 def _default_delivery() -> Delivery:

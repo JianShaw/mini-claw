@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from claw.types import AgentReply, ChatMessage, InboundMessage, Session
+from collections.abc import AsyncIterator
+
+from claw.types import AgentReply, ChatMessage, InboundMessage, Session, StreamChunk
 
 
 class EchoAgentRunner:
@@ -12,10 +14,12 @@ class EchoAgentRunner:
     """
 
     async def run(self, session: Session, message: InboundMessage) -> AgentReply:
-        # 记录用户消息
         session.history.append(ChatMessage(role="user", content=message.text))
-        # 生成回声回复
         reply = AgentReply(text=f"echo: {message.text}")
-        # 记录助手回复
         session.history.append(ChatMessage(role="assistant", content=reply.text))
         return reply
+
+    async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]:
+        """流式版本：yield StreamChunk。assistant history 由调用方（Gateway）追加。"""
+        session.history.append(ChatMessage(role="user", content=message.text))
+        yield StreamChunk(type="content", text=f"echo: {message.text}")

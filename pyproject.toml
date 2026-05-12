@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mini-claw-chat = "chat.app:run"
+mini-claw-chat = "chat.app:main"
 
 [build-system]
 requires = ["setuptools>=69"]

@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from claw.ports import Adapter, DedupeStore, Gateway
-from claw.types import AgentReply, InboundMessage, PlatformEvent
+from claw.types import AgentReply, InboundMessage, PlatformEvent, StreamChunk
 
 
 class InMemoryDedupeStore:
@@ -69,8 +71,33 @@ class ChannelProcessor:
             # 6. 转发给 Gateway
             return await self._gateway.handle_inbound_message(inbound)
         except Exception:
-            # 吞掉所有异常，webhook 场景下不应抛错导致平台重试
             return None
+
+    async def process_stream(self, event: PlatformEvent) -> AsyncIterator[StreamChunk]:
+        """流式处理：复用去重/校验/过滤，通过网关流式转发 StreamChunk。"""
+        try:
+            dedupe_key = self._get_dedupe_key(event)
+            if await self._dedupe_store.exists(dedupe_key):
+                return
+            await self._dedupe_store.set(dedupe_key, ttl_seconds=60 * 60)
+
+            inbound = self._adapter.to_inbound_message(event)
+            inbound.metadata = {
+                **inbound.metadata,
+                "transport": event.transport,
+                "event_id": event.event_id,
+                "received_at": event.received_at,
+            }
+
+            if self._validate(inbound) is not None:
+                return
+            if self._should_ignore(inbound):
+                return
+
+            async for chunk in self._gateway.handle_stream(inbound):
+                yield chunk
+        except Exception:
+            return
 
     def _get_dedupe_key(self, event: PlatformEvent) -> str:
         """用 platform + event_id 拼接去重键。"""

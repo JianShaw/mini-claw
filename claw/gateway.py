@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import Any
+
 from claw.ports import AgentRunner, Delivery, SessionStore
 from claw.session import build_session_key, create_session
-from claw.types import AgentReply, InboundMessage
+from claw.types import AgentReply, ChatMessage, InboundMessage, StreamChunk
 
 
 class RuntimeGateway:
@@ -46,3 +49,29 @@ class RuntimeGateway:
         await self._delivery.send(message, reply)
 
         return reply
+
+    async def handle_stream(self, message: InboundMessage) -> AsyncIterator[StreamChunk]:
+        """流式处理：yield StreamChunk，流结束后保存完整 assistant message 并投递。
+        thinking 内容不写入 history，但包含在 Delivery 的 AgentReply.metadata 中。"""
+        session_key = build_session_key(message)
+        session = await self._session_store.get(session_key)
+        if session is None:
+            session = create_session(message, agent_id=self._default_agent_id)
+
+        full_text = ""
+        full_thinking = ""
+        async for chunk in self._agent_runner.run_stream(session, message):
+            if chunk.type == "thinking":
+                full_thinking += chunk.text
+            else:
+                full_text += chunk.text
+            yield chunk
+
+        # 流结束，保存完整 assistant message（仅 content 部分）
+        session.history.append(ChatMessage(role="assistant", content=full_text))
+        message.metadata["session_id"] = session.session_id
+        await self._session_store.save(session)
+        metadata: dict[str, Any] = {}
+        if full_thinking:
+            metadata["reasoning"] = full_thinking
+        await self._delivery.send(message, AgentReply(text=full_text, metadata=metadata))

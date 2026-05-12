@@ -5,6 +5,7 @@ from __future__ import annotations
 from claw.agent import MiniClaw
 from claw.channels.local import LocalDelivery
 from claw.runner import EchoAgentRunner
+from claw.types import StreamChunk
 
 
 def _make_claw(delivery: LocalDelivery) -> MiniClaw:
@@ -36,3 +37,39 @@ async def test_mini_claw_preserves_history_across_messages() -> None:
     session = await claw.gateway._session_store.get("local:local-app:local-user")
     assert session is not None
     assert len(session.history) == 4
+
+
+# --- areply_stream 测试 ---
+
+
+async def test_mini_claw_areply_stream_yields_text() -> None:
+    """areply_stream 应逐步产出 StreamChunk。"""
+    delivery = LocalDelivery()
+    claw = _make_claw(delivery)
+    chunks: list[StreamChunk] = []
+    async for chunk in claw.areply_stream("hello"):
+        chunks.append(chunk)
+    assert len(chunks) == 1
+    assert chunks[0].type == "content"
+    assert chunks[0].text == "echo: hello"
+
+
+async def test_mini_claw_areply_stream_saves_history() -> None:
+    """areply_stream 流结束后 history 应正确保存。"""
+    delivery = LocalDelivery()
+    claw = _make_claw(delivery)
+    async for _ in claw.areply_stream("hello"):
+        pass
+    session = await claw.gateway._session_store.get("local:local-app:local-user")
+    assert session is not None
+    assert len(session.history) == 2
+
+
+async def test_mini_claw_areply_stream_routes_through_delivery() -> None:
+    """areply_stream 流结束后 Delivery 应被调用。"""
+    delivery = LocalDelivery()
+    claw = _make_claw(delivery)
+    async for _ in claw.areply_stream("hello"):
+        pass
+    assert len(delivery.sent) == 1
+    assert delivery.sent[0][1].text == "echo: hello"

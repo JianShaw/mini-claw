@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 from openai import AsyncOpenAI
 
-from claw.types import AgentReply, ChatMessage, InboundMessage, Session
+from claw.types import AgentReply, ChatMessage, InboundMessage, Session, StreamChunk
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
@@ -50,3 +51,25 @@ class DeepSeekAgentRunner:
         if reasoning:
             metadata["reasoning"] = reasoning
         return AgentReply(text=text, metadata=metadata)
+
+    async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]:
+        """流式版本：通过 stream=True 调用 API，逐 chunk yield StreamChunk。
+        thinking 模式下先产出 thinking chunk，再产出 content chunk。assistant history 由调用方追加。"""
+        session.history.append(ChatMessage(role="user", content=message.text))
+        messages = [{"role": m.role, "content": m.content} for m in session.history]
+
+        kwargs: dict = {"model": self.model, "messages": messages, "stream": True}
+        if self.thinking:
+            kwargs["reasoning_effort"] = "high"
+
+        stream = await self.client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            delta = chunk.choices[0].delta
+            # 思考内容（thinking 模式下先于 content 出现）
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if reasoning:
+                yield StreamChunk(type="thinking", text=reasoning)
+            # 正文内容
+            content = delta.content or ""
+            if content:
+                yield StreamChunk(type="content", text=content)

@@ -31,3 +31,12 @@ mini-claw/
 - Use `from __future__ import annotations` in all modules
 - Use `uv` for all dependency and environment management
 - Keep `chat/` thin — all real logic goes in `claw/`
+
+## 开发中需要注意
+
+- 默认使用PLAN模式进行规划之后。
+- PLAN规划的方案，确认其中有相应的test方案，注意边界问题。
+- 将确认好的PLAN保存到docs目录下，如果PLAN有更新迭代，一定要同步更新docs下的文档。
+- 业务代码要有清晰的注释
+
+

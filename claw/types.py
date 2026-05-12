@@ -88,3 +88,10 @@ class AgentReply:
     """Agent 的回复结果。"""
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class StreamChunk:
+    """流式输出中的一个片段，通过 type 区分思考和正文。"""
+    type: Literal["thinking", "content"]
+    text: str
