@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
 from claw.agent import MiniClaw
 
 
-def run() -> None:
-    claw = MiniClaw()
+def run(claw: MiniClaw | None = None) -> None:
+    load_dotenv()
+    claw = claw or MiniClaw()
 
     print("Mini Claw chat")
     print("Type /exit to quit.")
@@ -19,7 +22,9 @@ def run() -> None:
             break
 
         reply = claw.reply(text)
-        print(f"claw> {reply}")
+        if reasoning := reply.metadata.get("reasoning"):
+            print(f"think> {reasoning}")
+        print(f"claw> {reply.text}")
 
 
 if __name__ == "__main__":

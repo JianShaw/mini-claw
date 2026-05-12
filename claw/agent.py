@@ -7,7 +7,8 @@ import asyncio
 from claw.channels.local import LocalAdapter, LocalTransport
 from claw.gateway import RuntimeGateway
 from claw.processor import ChannelProcessor, InMemoryDedupeStore
-from claw.runner import EchoAgentRunner
+from claw.deepseek import DeepSeekAgentRunner
+from claw.ports import AgentRunner
 from claw.session import InMemorySessionStore
 from claw.ports import Delivery
 from claw.types import AgentReply, PlatformEvent
@@ -22,14 +23,19 @@ class MiniClaw:
           → Delivery.send()
     """
 
-    def __init__(self, delivery: Delivery | None = None) -> None:
-        # Transport 负责将外部输入转为 PlatformEvent
+    def __init__(
+        self,
+        delivery: Delivery | None = None,
+        *,
+        agent_runner: AgentRunner | None = None,
+        api_key: str | None = None,
+    ) -> None:
         self.transport = LocalTransport()
-        # Delivery 暴露在外，方便测试断言；默认使用 JsonlDelivery
         self.delivery = delivery or _default_delivery()
+        runner = agent_runner or DeepSeekAgentRunner(api_key=api_key)
         self.gateway = RuntimeGateway(
             session_store=InMemorySessionStore(),
-            agent_runner=EchoAgentRunner(),
+            agent_runner=runner,
             delivery=self.delivery,
         )
         self.processor = ChannelProcessor(
@@ -38,15 +44,15 @@ class MiniClaw:
             dedupe_store=InMemoryDedupeStore(),
         )
 
-    def reply(self, text: str) -> str:
+    def reply(self, text: str) -> AgentReply:
         """同步接口，供 CLI 使用。"""
         return asyncio.run(self.areply(text))
 
-    async def areply(self, text: str) -> str:
+    async def areply(self, text: str) -> AgentReply:
         """异步接口：通过 Transport 将文本转为 PlatformEvent，走完整处理链路。"""
         event: PlatformEvent = self.transport.receive(text)
         reply: AgentReply | None = await self.processor.process(event)
-        return reply.text if reply is not None else ""
+        return reply if reply is not None else AgentReply(text="")
 
 
 def _default_delivery() -> Delivery:

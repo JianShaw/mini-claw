@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "A small Python Mini Claw playground."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "openai>=2.36.0",
+    "python-dotenv>=1.2.2",
+]
 
 [project.scripts]
 mini-claw-chat = "chat.app:run"
