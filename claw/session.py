@@ -151,6 +151,7 @@ class JsonlSessionStore:
             "sender_id": session.sender_id,
             "agent_id": session.agent_id,
             "summary": session.summary,
+            "history_offset": session.history_offset,
         }
 
     def _meta_to_session(self, session_id: str, peer_key: str, meta: dict, history: list[ChatMessage] | None = None) -> Session:
@@ -165,20 +166,25 @@ class JsonlSessionStore:
             agent_id=meta["agent_id"],
             history=history or [],
             summary=meta.get("summary"),
+            history_offset=meta.get("history_offset", 0),
         )
 
     # --- JSONL 读写 ---
 
-    def _read_history(self, session_id: str) -> list[ChatMessage]:
-        """从 JSONL 文件读取全部历史消息。"""
+    def _read_history(self, session_id: str, offset: int = 0) -> list[ChatMessage]:
+        """从 JSONL 文件读取历史消息，跳过前 offset 条有效记录。"""
         path = self._session_path(session_id)
         if not path.exists():
             return []
         messages: list[ChatMessage] = []
+        count = 0
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
+                    continue
+                if count < offset:
+                    count += 1
                     continue
                 record = json.loads(line)
                 messages.append(ChatMessage(
@@ -186,6 +192,7 @@ class JsonlSessionStore:
                     content=record["content"],
                     ts=record.get("ts"),
                 ))
+                count += 1
         return messages
 
     def _append_messages(self, session_id: str, messages: list[ChatMessage]) -> None:
@@ -208,12 +215,17 @@ class JsonlSessionStore:
         return await self.get_active(session_key)
 
     async def save(self, session: Session) -> None:
-        """保存 session：追加新消息到 JSONL，更新内存 index 并写回磁盘。"""
-        # 追加尚未持久化的新消息
-        saved = self._saved_count.get(session.session_id, 0)
-        new_messages = session.history[saved:]
+        """保存 session：追加新消息到 JSONL，更新内存 index 并写回磁盘。
+
+        使用 history_offset 防御性计算已持久化数量，避免 _saved_count
+        缺失或 stale 时重复追写旧消息。
+        """
+        offset = session.history_offset
+        saved_total = max(self._saved_count.get(session.session_id, offset), offset)
+        already_persisted = max(0, min(len(session.history), saved_total - offset))
+        new_messages = session.history[already_persisted:]
         self._append_messages(session.session_id, new_messages)
-        self._saved_count[session.session_id] = len(session.history)
+        self._saved_count[session.session_id] = offset + len(session.history)
 
         # 更新内存中的 index 并写回
         entry = self._peer_entry(session.session_key)
@@ -227,10 +239,12 @@ class JsonlSessionStore:
         index = self._ensure_index()
         for peer_key, entry in index.items():
             if session_id in entry["sessions"]:
-                history = self._read_history(session_id)
-                self._saved_count[session_id] = len(history)
+                meta = entry["sessions"][session_id]
+                offset = meta.get("history_offset", 0)
+                history = self._read_history(session_id, offset=offset)
+                self._saved_count[session_id] = offset + len(history)
                 return self._meta_to_session(
-                    session_id, peer_key, entry["sessions"][session_id], history
+                    session_id, peer_key, meta, history
                 )
         return None
 
@@ -279,9 +293,11 @@ class JsonlSessionStore:
         active_id = entry["active"]
         if active_id not in entry["sessions"]:
             return None
-        history = self._read_history(active_id)
-        self._saved_count[active_id] = len(history)
-        return self._meta_to_session(active_id, peer_key, entry["sessions"][active_id], history)
+        meta = entry["sessions"][active_id]
+        offset = meta.get("history_offset", 0)
+        history = self._read_history(active_id, offset=offset)
+        self._saved_count[active_id] = offset + len(history)
+        return self._meta_to_session(active_id, peer_key, meta, history)
 
     async def set_active(self, peer_key: str, session_id: str) -> None:
         """设置 peer 的活跃 session。"""

@@ -83,6 +83,7 @@ class Session:
     history: list[ChatMessage] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     summary: str | None = None
+    history_offset: int = 0
 
 
 @dataclass(slots=True)

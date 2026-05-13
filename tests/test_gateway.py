@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 from claw.channels.local import LocalDelivery
+from claw.compressor import ContextCompressor
 from claw.gateway import RuntimeGateway
 from claw.runner import EchoAgentRunner
 from claw.session import InMemorySessionStore, create_session
@@ -402,3 +405,122 @@ async def test_gateway_compact_no_session_returns_none() -> None:
     )
     result = await gateway.compact_session(_msg())
     assert result is None
+
+
+# --- 自动压缩测试 ---
+
+
+def _mock_compressor(max_tokens: int = 10, keep_rounds: int = 2) -> ContextCompressor:
+    """创建使用 mock client 的 compressor。"""
+    mock_client = AsyncMock()
+    mock_response = AsyncMock()
+    mock_response.choices = [AsyncMock()]
+    mock_response.choices[0].message.content = "Auto summary"
+    mock_client.chat.completions.create.return_value = mock_response
+
+    return ContextCompressor(
+        client=mock_client,
+        model="test-model",
+        max_tokens=max_tokens,
+        keep_rounds=keep_rounds,
+    )
+
+
+async def test_gateway_auto_compress_triggers_on_high_tokens() -> None:
+    """token 超阈值时自动压缩在调 runner 之前执行并立即保存。"""
+    store = InMemorySessionStore()
+    # 很低的阈值 + 保留 1 轮
+    compressor = _mock_compressor(max_tokens=5, keep_rounds=1)
+    gateway = RuntimeGateway(
+        session_store=store,
+        agent_runner=EchoAgentRunner(),
+        delivery=LocalDelivery(),
+        compressor=compressor,
+    )
+
+    # 积累多轮对话（每轮 ~3 token，3 轮 = ~9 token > 5 阈值）
+    await gateway.handle_inbound_message(_msg("first"))
+    await gateway.handle_inbound_message(_msg("second"))
+    await gateway.handle_inbound_message(_msg("third"))
+
+    session = await store.get_active("local:app:user")
+    assert session.summary is not None  # 自动压缩已触发
+    assert len(session.history) < 6  # history 被裁剪
+
+
+async def test_gateway_auto_compress_not_triggered_below_threshold() -> None:
+    """token 未超阈值时不触发自动压缩。"""
+    store = InMemorySessionStore()
+    compressor = _mock_compressor(max_tokens=100000)  # 很高的阈值
+    gateway = RuntimeGateway(
+        session_store=store,
+        agent_runner=EchoAgentRunner(),
+        delivery=LocalDelivery(),
+        compressor=compressor,
+    )
+
+    await gateway.handle_inbound_message(_msg("hello"))
+    session = await store.get_active("local:app:user")
+    assert session.summary is None  # 没有压缩
+
+
+async def test_gateway_no_compressor_no_auto_compress() -> None:
+    """没有 compressor 时不触发自动压缩。"""
+    store = InMemorySessionStore()
+    gateway = RuntimeGateway(
+        session_store=store,
+        agent_runner=EchoAgentRunner(),
+        delivery=LocalDelivery(),
+        compressor=None,
+    )
+
+    await gateway.handle_inbound_message(_msg("hello"))
+    session = await store.get_active("local:app:user")
+    assert session.summary is None
+
+
+async def test_gateway_compact_with_compressor_uses_force() -> None:
+    """有 compressor 时 compact_session 使用 force=True 保留最近 N 轮。"""
+    store = InMemorySessionStore()
+    compressor = _mock_compressor(max_tokens=100000, keep_rounds=1)  # 高阈值+保留1轮
+    gateway = RuntimeGateway(
+        session_store=store,
+        agent_runner=EchoAgentRunner(),
+        delivery=LocalDelivery(),
+        compressor=compressor,
+    )
+
+    # 积累多轮对话
+    await gateway.handle_inbound_message(_msg("first"))
+    await gateway.handle_inbound_message(_msg("second"))
+
+    # 手动 compact（force=True，绕过阈值）
+    summary = await gateway.compact_session(_msg())
+    assert summary is not None
+
+    session = await store.get_active("local:app:user")
+    # compressor 路径保留最近 keep_rounds 轮，不是全量清空
+    assert len(session.history) > 0
+
+
+async def test_gateway_compact_fallback_full_clear_without_compressor() -> None:
+    """无 compressor 时 compact_session 全量清空 history（fallback 路径）。"""
+    store = InMemorySessionStore()
+    gateway = RuntimeGateway(
+        session_store=store,
+        agent_runner=_SummaryRunner(),
+        delivery=LocalDelivery(),
+    )
+
+    await gateway.handle_inbound_message(_msg("discuss something"))
+    session = await store.get_active("local:app:user")
+    assert len(session.history) > 0
+
+    # 手动 compact（无 compressor，fallback 全量清空）
+    summary = await gateway.compact_session(_msg())
+    assert summary is not None
+
+    session = await store.get_active("local:app:user")
+    # fallback 路径全量清空 history
+    assert len(session.history) == 0
+    assert session.summary is not None

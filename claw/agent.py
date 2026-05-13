@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 
 from claw.channels.local import LocalAdapter, LocalTransport
@@ -13,6 +14,17 @@ from claw.ports import AgentRunner, SessionStore
 from claw.session import JsonlSessionStore
 from claw.ports import Delivery
 from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
+
+
+def _env_int(key: str, default: int) -> int:
+    """从环境变量读取整数，无效值时返回默认值。"""
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
 
 
 class MiniClaw:
@@ -31,15 +43,35 @@ class MiniClaw:
         agent_runner: AgentRunner | None = None,
         api_key: str | None = None,
         session_store: SessionStore | None = None,
+        auto_compact: bool = True,
+        max_tokens: int | None = None,
+        keep_rounds: int | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
         runner = agent_runner or DeepSeekAgentRunner(api_key=api_key)
         self._session_store = session_store or JsonlSessionStore()
+
+        # 环境变量优先，参数次之，最后用默认值
+        resolved_max_tokens = _env_int("COMPACT_MAX_TOKENS", max_tokens or 8000)
+        resolved_keep_rounds = _env_int("COMPACT_KEEP_ROUNDS", keep_rounds or 4)
+
+        # 自动压缩配置：compressor 注入到 Gateway
+        compressor = None
+        if auto_compact and isinstance(runner, DeepSeekAgentRunner):
+            from claw.compressor import ContextCompressor
+            compressor = ContextCompressor(
+                client=runner.client,
+                model=runner.model,
+                max_tokens=resolved_max_tokens,
+                keep_rounds=resolved_keep_rounds,
+            )
+
         self.gateway = RuntimeGateway(
             session_store=self._session_store,
             agent_runner=runner,
             delivery=self.delivery,
+            compressor=compressor,
         )
         self.processor = ChannelProcessor(
             adapter=LocalAdapter(),

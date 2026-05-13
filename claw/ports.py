@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Protocol
 
-from claw.types import AgentReply, InboundMessage, PlatformEvent, Session
+from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
 
 
 class Transport(Protocol):
@@ -53,8 +54,15 @@ class SessionStore(Protocol):
 class AgentRunner(Protocol):
     """Agent 运行器：接收会话和当前消息，返回回复。"""
     async def run(self, session: Session, message: InboundMessage) -> AgentReply: ...
+    async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]: ...
 
 
 class Delivery(Protocol):
     """投递：将 Agent 回复发送出去（本地记录 / API 调用等）。"""
     async def send(self, message: InboundMessage, reply: AgentReply) -> None: ...
+
+
+class ContextCompressor(Protocol):
+    """上下文压缩器：检测并压缩过长的会话历史。"""
+    def should_compress(self, session: Session, incoming_text: str | None = None) -> bool: ...
+    async def compress(self, session: Session, *, force: bool = False) -> str | None: ...

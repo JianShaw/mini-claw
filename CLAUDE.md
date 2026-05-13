@@ -57,6 +57,21 @@ Each peer has one "active" session. Messages are routed to the active session au
 
 When triggered, the LLM generates a summary of the conversation history. The summary is stored in `session.summary`, history is cleared in memory. The LLM context becomes: `system(summary) + recent messages`. Original JSONL records remain on disk.
 
+## Project Rules
+
+- This is EasyClaw, a mini agent gateway.
+- Gateway only handles routing.
+- SessionStore manages conversation state.
+- AgentRunner owns the agent loop.
+- ToolRegistry owns tool discovery and invocation.
+- All core modules must have tests.
+- 默认使用PLAN模式进行规划之后。
+- PLAN规划的方案，确认其中有相应的test方案，注意边界问题。
+- 将确认好的PLAN保存到docs目录下，如果PLAN有更新迭代，一定要同步更新docs下的文档。
+- 业务代码要有清晰的注释
+- 业务代码编写完成后，全量执行测试用例
+
+
 ### Module Responsibilities
 
 - `claw.agent.MiniClaw` — facade, composes all dependencies, exposes session management methods
@@ -72,9 +87,3 @@ When triggered, the LLM generates a summary of the conversation history. The sum
 - Use `uv` for all dependency and environment management
 - Keep `chat/` thin — all real logic goes in `claw/`
 
-## 开发中需要注意
-
-- 默认使用PLAN模式进行规划之后。
-- PLAN规划的方案，确认其中有相应的test方案，注意边界问题。
-- 将确认好的PLAN保存到docs目录下，如果PLAN有更新迭代，一定要同步更新docs下的文档。
-- 业务代码要有清晰的注释

@@ -35,3 +35,5 @@ Thumbs.db
 
 # Chat data
 data/
+.claude
+.playwright-mcp
