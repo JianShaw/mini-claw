@@ -31,14 +31,22 @@ class DeepSeekAgentRunner:
         self.model = model or os.environ.get("DEEPSEEK_MODEL", DEFAULT_MODEL)
         self.thinking = thinking if thinking is not None else os.environ.get("DEEPSEEK_THINKING", "").lower() in ("true", "1", "yes")
 
+    def _thinking_options(self) -> dict[str, str]:
+        return {
+            "type": "enabled" if self.thinking else "disabled",
+            "reasoning_effort": "high",
+        }
+
     async def run(self, session: Session, message: InboundMessage) -> AgentReply:
         session.history.append(ChatMessage(role="user", content=message.text))
 
         messages = self._build_messages(session)
 
-        kwargs: dict = {"model": self.model, "messages": messages}
-        if self.thinking:
-            kwargs["reasoning_effort"] = "high"
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "extra_body": {"thinking": self._thinking_options()},
+        }
 
         response = await self.client.chat.completions.create(**kwargs)
         msg = response.choices[0].message
@@ -69,9 +77,12 @@ class DeepSeekAgentRunner:
         session.history.append(ChatMessage(role="user", content=message.text))
         messages = self._build_messages(session)
 
-        kwargs: dict = {"model": self.model, "messages": messages, "stream": True}
-        if self.thinking:
-            kwargs["reasoning_effort"] = "high"
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "extra_body": {"thinking": self._thinking_options()},
+        }
 
         stream = await self.client.chat.completions.create(**kwargs)
         async for chunk in stream:

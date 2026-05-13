@@ -52,6 +52,48 @@ def _mock_chunk(reasoning_content: str | None = None, content: str | None = None
     return chunk
 
 
+async def test_deepseek_run_sends_deepseek_thinking_object() -> None:
+    runner = DeepSeekAgentRunner(api_key="test", thinking=True)
+    msg = MagicMock()
+    msg.content = "answer"
+    msg.reasoning_content = "reasoning"
+    choice = MagicMock()
+    choice.message = msg
+    response = MagicMock()
+    response.choices = [choice]
+    runner.client.chat.completions.create = AsyncMock(return_value=response)
+
+    await runner.run(create_session(_msg()), _msg("hello"))
+
+    kwargs = runner.client.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"]["thinking"] == {
+        "type": "enabled",
+        "reasoning_effort": "high",
+    }
+    assert "thinking" not in kwargs
+    assert "reasoning_effort" not in kwargs
+
+
+async def test_deepseek_run_stream_sends_disabled_thinking_object() -> None:
+    runner = DeepSeekAgentRunner(api_key="test", thinking=False)
+    runner.client.chat.completions.create = AsyncMock(
+        return_value=_FakeStream([_mock_chunk(content="answer")])
+    )
+
+    result: list[StreamChunk] = []
+    async for chunk in runner.run_stream(create_session(_msg()), _msg("hello")):
+        result.append(chunk)
+
+    kwargs = runner.client.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"]["thinking"] == {
+        "type": "disabled",
+        "reasoning_effort": "high",
+    }
+    assert "thinking" not in kwargs
+    assert "reasoning_effort" not in kwargs
+    assert result[0].text == "answer"
+
+
 async def test_deepseek_stream_yields_thinking_then_content() -> None:
     """thinking 模式下应先 yield thinking chunk，再 yield content chunk。"""
     runner = DeepSeekAgentRunner(api_key="test", thinking=True)
