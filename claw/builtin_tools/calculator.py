@@ -1,4 +1,4 @@
-"""安全数学计算工具：使用 ast 白名单求值，拒绝危险调用。"""
+"""安全数学计算工具：使用 ast 白名单求值，拒绝危险调用和大指数 DoS。"""
 
 from __future__ import annotations
 
@@ -16,9 +16,17 @@ _ALLOWED_NODES = (
     ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq,
 )
 
+# 安全限制：防止 CPU/内存 DoS
+_MAX_EXPR_LENGTH = 200
+_MAX_INT_VALUE = 10**15
+_MAX_EXPONENT = 10000
+
 
 def _safe_eval(expression: str) -> str:
     """安全求值数学表达式，仅允许数字和基本运算符。"""
+    if len(expression) > _MAX_EXPR_LENGTH:
+        return f"Error: expression too long (max {_MAX_EXPR_LENGTH} chars)"
+
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as e:
@@ -27,6 +35,15 @@ def _safe_eval(expression: str) -> str:
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_NODES):
             return f"Error: disallowed expression element in '{expression}'"
+        # 限制整数字面量大小
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            if abs(node.value) > _MAX_INT_VALUE:
+                return f"Error: integer value too large (max {_MAX_INT_VALUE})"
+        # 限制指数大小
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            if isinstance(node.right, ast.Constant) and isinstance(node.right.value, (int, float)):
+                if abs(node.right.value) > _MAX_EXPONENT:
+                    return f"Error: exponent too large (max {_MAX_EXPONENT})"
 
     try:
         result = eval(compile(tree, "<calc>", "eval"))  # noqa: S307

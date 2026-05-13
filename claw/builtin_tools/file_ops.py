@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -16,37 +15,31 @@ from claw.tools import Tool, ToolsRegistry
 
 
 def _safe_path(path_str: str, workspace_root: Path) -> Path | str:
-    """解析路径并检查是否在 workspace_root 内。返回 Path 或错误字符串。"""
+    """解析路径并检查是否在 workspace_root 内。返回 Path 或错误字符串。
+
+    使用 relative_to 做路径分量级别的检查，避免字符串前缀绕过
+    （例如 root=/tmp/app 时 /tmp/app2/evil 会被正确拒绝）。
+    """
     target = (workspace_root / path_str).resolve()
     root = workspace_root.resolve()
-    if not str(target).startswith(str(root)):
+    try:
+        target.relative_to(root)
+    except ValueError:
         return f"Error: path escapes workspace root: {path_str}"
     return target
 
 
-async def _file_read(workspace_root: Path) -> Any:
-    def handler(args: dict[str, Any]) -> str:
-        result = _safe_path(args["path"], workspace_root)
-        if isinstance(result, str):
-            return result
-        path = result
-        encoding = args.get("encoding", "utf-8")
-        try:
-            # 拒绝符号链接（防止逃逸）
-            if path.is_symlink():
-                return f"Error: symlink not allowed: {path}"
-            content = path.read_text(encoding=encoding)
-            # 读取大小限制 1MB
-            if len(content) > 1_000_000:
-                return content[:1_000_000] + "\n... (truncated, file too large)"
-            return content
-        except FileNotFoundError:
-            return f"Error: file not found: {path}"
-        except PermissionError:
-            return f"Error: permission denied: {path}"
-        except Exception as e:
-            return f"Error: {type(e).__name__}: {e}"
-    return handler
+def _contains_symlink(path: Path, root: Path) -> bool:
+    """检查路径本身或其父目录链（到 root 为止）是否包含符号链接。"""
+    if path.is_symlink():
+        return True
+    root_resolved = root.resolve()
+    current = path.parent
+    while current != current.parent and current != root_resolved:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return False
 
 
 def register(
@@ -69,7 +62,7 @@ def register(
         path = result
         encoding = args.get("encoding", "utf-8")
         try:
-            if path.is_symlink():
+            if _contains_symlink(path, root):
                 return f"Error: symlink not allowed: {path}"
             content = path.read_text(encoding=encoding)
             if len(content) > 1_000_000:
@@ -90,6 +83,8 @@ def register(
         if isinstance(result, str):
             return result
         path = result
+        if _contains_symlink(path, root):
+            return f"Error: symlink not allowed: {path}"
         content = args["content"]
         encoding = args.get("encoding", "utf-8")
         try:

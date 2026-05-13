@@ -4,11 +4,13 @@
 - 默认不注册任何命令，需通过 allowed_commands 白名单显式启用
 - 工作目录可限定为指定沙箱路径
 - 超时控制防止命令挂起
+- 使用 create_subprocess_exec 避免 shell 元字符注入（&&、|、;等）
 """
 
 from __future__ import annotations
 
 import asyncio
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -26,17 +28,26 @@ def _make_handler(
         command = args["command"]
         cmd_timeout = args.get("timeout", timeout)
 
+        # 使用 shlex.split 正确解析命令（处理引号等），避免 shell 元字符注入
+        try:
+            parts = shlex.split(command)
+        except ValueError as e:
+            return f"Error: invalid command syntax: {e}"
+
+        if not parts:
+            return "Error: empty command"
+
+        cmd_name = Path(parts[0]).name
+
         # 白名单检查：只允许指定的命令
         if allowed is not None:
-            cmd_parts = command.strip().split()
-            cmd_prefix = cmd_parts[0] if cmd_parts else ""
-            cmd_name = Path(cmd_prefix).name
             if cmd_name not in allowed:
                 return f"Error: command '{cmd_name}' not in allowed list: {allowed}"
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            # 使用 exec 而非 shell，避免 &&、|、; 等被解释为 shell 操作符
+            proc = await asyncio.create_subprocess_exec(
+                *parts,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=work_dir,
@@ -47,17 +58,19 @@ def _make_handler(
         except asyncio.TimeoutError:
             proc.kill()
             return f"Error: command timed out after {cmd_timeout}s"
+        except FileNotFoundError:
+            return f"Error: command not found: {cmd_name}"
 
         stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
 
-        parts = []
+        parts_out = []
         if stdout:
-            parts.append(f"stdout:\n{stdout}")
+            parts_out.append(f"stdout:\n{stdout}")
         if stderr:
-            parts.append(f"stderr:\n{stderr}")
-        parts.append(f"exit code: {proc.returncode}")
-        return "\n".join(parts)
+            parts_out.append(f"stderr:\n{stderr}")
+        parts_out.append(f"exit code: {proc.returncode}")
+        return "\n".join(parts_out)
 
     return handler
 
@@ -80,14 +93,14 @@ def register(
     """
     registry.register(Tool(
         name="shell",
-        description="Execute a shell command and return stdout, stderr, and exit code. Only allowed commands can be executed.",
+        description="Execute a command and return stdout, stderr, and exit code. Only allowed commands can be executed. Shell operators (&&, |, ;) are not supported.",
         handler=_make_handler(allowed_commands, cwd, default_timeout),
         parameters={
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute",
+                    "description": "The command to execute (no shell operators)",
                 },
                 "timeout": {
                     "type": "integer",

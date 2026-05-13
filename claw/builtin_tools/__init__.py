@@ -1,7 +1,9 @@
 """内置工具包：提供常用工具供 Agent 使用。
 
-默认注册安全的工具（calculator、time）。危险工具（shell、file_ops、web）
-需要显式 opt-in：通过各自的 register() 函数配置安全参数后手动注册。
+安全工具默认注册（calculator、time、file_ops、file_search、file_patch）。
+危险工具（shell、python_test）需要显式 opt-in。
+Git 工具自动检测是否在 git 仓库中。
+web_search 为可选依赖。
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ def register_all(registry: ToolsRegistry) -> None:
     """
     from claw.builtin_tools.calculator import register as register_calculator
     from claw.builtin_tools.file_ops import register as register_file_ops
+    from claw.builtin_tools.file_patch import register as register_file_patch
+    from claw.builtin_tools.file_search import register as register_file_search
     from claw.builtin_tools.time_tool import register as register_time
 
     # 安全工具，无风险
@@ -25,9 +29,21 @@ def register_all(registry: ToolsRegistry) -> None:
 
     # 文件操作：限定当前工作目录为 workspace root
     register_file_ops(registry)
+    register_file_search(registry)
+    register_file_patch(registry)
 
     # Shell 工具：默认不注册，需手动注册并指定白名单
     # 如需启用：shell.register(registry, allowed_commands=["ls", "cat", "echo"])
+
+    # python_test：默认不注册，需手动注册
+    # 如需启用：python_test.register(registry)
+
+    # Git 工具：自动检测是否在 git 仓库中
+    try:
+        from claw.builtin_tools.git_tool import register as register_git
+        register_git(registry)
+    except Exception:
+        pass
 
     # web_search 可选依赖，仅在安装了 duckduckgo-search 时注册
     try:
