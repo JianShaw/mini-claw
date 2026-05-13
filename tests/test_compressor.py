@@ -244,3 +244,62 @@ def test_find_split_point_recent_starts_with_user() -> None:
     split = c._find_split_point(s)
     assert split > 0
     assert s.history[split].role == "user"
+
+
+# --- 冷却机制测试 ---
+
+
+async def test_cooldown_prevents_immediate_re_compress() -> None:
+    """压缩后新消息不足 keep_rounds*2 时不触发再次压缩。"""
+    c = _compressor(max_tokens=1, keep_rounds=2)
+    s = _session(history=_make_history(5, content_len=100))
+
+    # 第一次压缩成功
+    result = await c.compress(s)
+    assert result is not None
+    compressed_len = len(s.history)
+
+    # 立即加 2 条消息（不够 keep_rounds*2=4 条冷却）
+    s.history.append(ChatMessage(role="user", content="new q"))
+    s.history.append(ChatMessage(role="assistant", content="new a"))
+
+    # should_compress 返回 False（冷却中）
+    assert not c.should_compress(s)
+
+
+async def test_cooldown_allows_compress_after_enough_new_messages() -> None:
+    """冷却期满（积累 > keep_rounds*2 条新消息）后允许再次压缩。"""
+    c = _compressor(max_tokens=1, keep_rounds=2)
+    s = _session(history=_make_history(5, content_len=100))
+
+    # 第一次压缩
+    await c.compress(s)
+
+    # 积累 keep_rounds*2+1=5 条新消息（超过冷却门槛）
+    for i in range(3):
+        s.history.append(ChatMessage(role="user", content=f"new q{i} " + "x" * 50))
+        s.history.append(ChatMessage(role="assistant", content=f"new a{i} " + "y" * 50))
+
+    # 冷却期满，应该允许压缩
+    assert c.should_compress(s)
+
+
+async def test_cooldown_does_not_affect_force() -> None:
+    """冷却不影响 force=True 的手动压缩。"""
+    c = _compressor(max_tokens=1, keep_rounds=1)
+    s = _session(history=_make_history(4, content_len=100))
+
+    # 第一次压缩（keep_rounds=1，保留 2 条）
+    await c.compress(s)
+    compressed_len = len(s.history)
+
+    # 加 2 条新消息，不足以满足冷却（需要 keep_rounds*2=2 条，刚够）
+    s.history.append(ChatMessage(role="user", content="new q " + "x" * 50))
+    s.history.append(ChatMessage(role="assistant", content="new a " + "y" * 50))
+
+    # should_compress 返回 False（冷却：新消息刚好 = keep_rounds*2，不足 >）
+    assert not c.should_compress(s)
+
+    # 但 force=True 仍可压缩
+    result = await c.compress(s, force=True)
+    assert result is not None

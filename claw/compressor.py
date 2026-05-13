@@ -48,12 +48,18 @@ class ContextCompressor:
 
         enabled=False 时始终返回 False（不影响手动 /compact）。
         消息不足 keep_rounds*2+2 时不压缩。
+        上次压缩后新积累不足 keep_rounds*2 条时不压缩（防止连续触发）。
         incoming_text 计入总量以避免追加后立即超阈值。
         """
         if not self.enabled:
             return False
         min_messages = self.keep_rounds * 2 + 2
         if len(session.history) < min_messages:
+            return False
+        # 冷却：压缩后至少再积累 keep_rounds*2 条新消息
+        last_len = session.metadata.get("_compact_cooldown", 0)
+        new_since_compress = len(session.history) - last_len
+        if new_since_compress <= self.keep_rounds * 2:
             return False
         total = estimate_session_tokens(session, extra_text=incoming_text)
         return total > self.max_tokens
@@ -82,6 +88,8 @@ class ContextCompressor:
         session.history_offset += split_point
         session.summary = new_summary
         session.history = recent
+        # 记录压缩后的 history 长度，作为下次压缩的冷却起点
+        session.metadata["_compact_cooldown"] = len(recent)
 
         logger.info(
             "Context compressed: %d older messages summarized, "
