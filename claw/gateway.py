@@ -45,24 +45,30 @@ class RuntimeGateway:
 
     async def _auto_compress_if_needed(
         self, session: Session, incoming_text: str
-    ) -> None:
-        """检查并执行自动压缩，成功后立即持久化 session。"""
+    ) -> str | None:
+        """检查并执行自动压缩，成功后立即持久化 session，返回摘要或 None。"""
         if self._compressor is None:
-            return
+            return None
         if not self._compressor.should_compress(session, incoming_text=incoming_text):
-            return
+            return None
         summary = await self._compressor.compress(session)
         if summary is not None:
             await self._session_store.save(session)
+        return summary
 
     async def handle_inbound_message(self, message: InboundMessage) -> AgentReply:
         session = await self._get_or_create_session(message)
 
         # 自动压缩：在调 runner 之前检查并执行，成功后立即持久化
-        await self._auto_compress_if_needed(session, message.text)
+        compact_summary = await self._auto_compress_if_needed(session, message.text)
 
         # AgentRunner 会往 session.history 追加记录
         reply = await self._agent_runner.run(session, message)
+
+        # 标记自动压缩事件，供上层（chat app）感知
+        if compact_summary is not None:
+            reply.metadata["auto_compact"] = True
+            reply.metadata["compact_summary"] = compact_summary
 
         message.metadata["session_id"] = session.session_id
         await self._session_store.save(session)
@@ -72,11 +78,14 @@ class RuntimeGateway:
 
     async def handle_stream(self, message: InboundMessage) -> AsyncIterator[StreamChunk]:
         """流式处理：yield StreamChunk，流结束后保存完整 assistant message 并投递。
-        thinking 内容不写入 history，但包含在 Delivery 的 AgentReply.metadata 中。"""
+        thinking 内容不写入 history，但包含在 Delivery 的 AgentReply.metadata 中。
+        自动压缩事件通过 StreamChunk(type="system") 通知。"""
         session = await self._get_or_create_session(message)
 
         # 自动压缩：在调 runner 之前检查并执行
-        await self._auto_compress_if_needed(session, message.text)
+        compact_summary = await self._auto_compress_if_needed(session, message.text)
+        if compact_summary is not None:
+            yield StreamChunk(type="system", text=f"[auto-compact] {compact_summary}")
 
         full_text = ""
         full_thinking = ""

@@ -9,9 +9,11 @@ from dotenv import load_dotenv
 from claw.agent import MiniClaw
 from claw.types import StreamChunk
 
-# ANSI 灰色文字用于显示 thinking 内容
+# ANSI 灰色文字用于显示 thinking 内容，黄色用于系统通知
 _THINK_PREFIX = "\033[90m[think] "
 _THINK_SUFFIX = "\033[0m"
+_SYSTEM_STYLE = "\033[33m"
+_SYSTEM_RESET = "\033[0m"
 
 _COMMANDS_HELP = """\
 Commands:
@@ -32,7 +34,10 @@ class _ChunkPrinter:
         self._in_thinking = False
 
     def print(self, chunk: StreamChunk) -> None:
-        if chunk.type == "thinking":
+        if chunk.type == "system":
+            # 系统通知（压缩事件等），独立一行显示
+            print(f"\n{_SYSTEM_STYLE}{chunk.text}{_SYSTEM_RESET}", flush=True)
+        elif chunk.type == "thinking":
             if not self._in_thinking:
                 print(_THINK_PREFIX, end="", flush=True)
                 self._in_thinking = True

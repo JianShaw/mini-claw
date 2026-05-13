@@ -96,5 +96,5 @@ class AgentReply:
 @dataclass(slots=True)
 class StreamChunk:
     """流式输出中的一个片段，通过 type 区分思考和正文。"""
-    type: Literal["thinking", "content"]
+    type: Literal["thinking", "content", "system"]
     text: str
