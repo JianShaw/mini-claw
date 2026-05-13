@@ -355,3 +355,67 @@ async def test_history_offset_saved_count_missing_no_duplicates(tmp_path) -> Non
     lines = [l for l in jsonl_path.read_text(encoding="utf-8").strip().split("\n") if l]
     assert len(lines) == 1
 
+
+# --- 工具消息持久化测试 ---
+
+
+async def test_tool_call_message_persisted_and_loaded(tmp_path) -> None:
+    """assistant 消息携带 tool_calls 时应正确持久化和加载。"""
+    store = JsonlSessionStore(data_dir=tmp_path)
+    session = create_session(_msg(peer_id="u1"))
+    session.history.append(ChatMessage(role="user", content="calculate 2+3"))
+    session.history.append(ChatMessage(
+        role="assistant",
+        content="",
+        tool_calls=[{
+            "id": "call_001",
+            "function": {"name": "calculator", "arguments": '{"expression": "2+3"}'},
+        }],
+    ))
+    await store.save(session)
+
+    loaded = await store.get_by_id(session.session_id)
+    assert loaded is not None
+    assert len(loaded.history) == 2
+    assert loaded.history[1].role == "assistant"
+    assert loaded.history[1].tool_calls is not None
+    assert len(loaded.history[1].tool_calls) == 1
+    assert loaded.history[1].tool_calls[0]["id"] == "call_001"
+    assert loaded.history[1].tool_calls[0]["function"]["name"] == "calculator"
+
+
+async def test_tool_result_message_persisted_and_loaded(tmp_path) -> None:
+    """tool 角色消息应正确持久化和加载。"""
+    store = JsonlSessionStore(data_dir=tmp_path)
+    session = create_session(_msg(peer_id="u1"))
+    session.history.append(ChatMessage(
+        role="tool",
+        content="5",
+        tool_call_id="call_001",
+        tool_name="calculator",
+    ))
+    await store.save(session)
+
+    loaded = await store.get_by_id(session.session_id)
+    assert loaded is not None
+    assert loaded.history[0].role == "tool"
+    assert loaded.history[0].content == "5"
+    assert loaded.history[0].tool_call_id == "call_001"
+    assert loaded.history[0].tool_name == "calculator"
+
+
+async def test_old_records_without_tool_fields_load_correctly(tmp_path) -> None:
+    """旧格式 JSONL 记录（无 tool_calls/tool_call_id/tool_name）应正常加载。"""
+    store = JsonlSessionStore(data_dir=tmp_path)
+    session = create_session(_msg(peer_id="u1"))
+    # 只用普通消息保存
+    session.history.append(ChatMessage(role="user", content="hi"))
+    await store.save(session)
+
+    loaded = await store.get_by_id(session.session_id)
+    assert loaded is not None
+    msg = loaded.history[0]
+    assert msg.tool_calls is None
+    assert msg.tool_call_id is None
+    assert msg.tool_name is None
+

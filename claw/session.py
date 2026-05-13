@@ -191,12 +191,15 @@ class JsonlSessionStore:
                     role=record["role"],
                     content=record["content"],
                     ts=record.get("ts"),
+                    tool_calls=record.get("tool_calls"),
+                    tool_call_id=record.get("tool_call_id"),
+                    tool_name=record.get("tool_name"),
                 ))
                 count += 1
         return messages
 
     def _append_messages(self, session_id: str, messages: list[ChatMessage]) -> None:
-        """追加消息到 JSONL 文件。"""
+        """追加消息到 JSONL 文件。支持工具调用和工具结果消息的持久化。"""
         if not messages:
             return
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -206,6 +209,12 @@ class JsonlSessionStore:
                 record: dict = {"role": msg.role, "content": msg.content}
                 if msg.ts is not None:
                     record["ts"] = msg.ts
+                if msg.tool_calls is not None:
+                    record["tool_calls"] = msg.tool_calls
+                if msg.tool_call_id is not None:
+                    record["tool_call_id"] = msg.tool_call_id
+                if msg.tool_name is not None:
+                    record["tool_name"] = msg.tool_name
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # --- SessionStore 接口实现 ---

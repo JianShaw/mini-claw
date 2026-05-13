@@ -59,10 +59,18 @@ class InboundMessage:
 
 @dataclass(slots=True)
 class ChatMessage:
-    """对话历史中的单条消息。"""
+    """对话历史中的单条消息。
+
+    tool_calls:   assistant 消息携带的工具调用列表（OpenAI function calling 格式）
+    tool_call_id: tool 消息对应的调用 ID
+    tool_name:    tool 消息对应的工具名称（便于调试和日志）
+    """
     role: Role
     content: str
     ts: int | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -96,5 +104,5 @@ class AgentReply:
 @dataclass(slots=True)
 class StreamChunk:
     """流式输出中的一个片段，通过 type 区分思考和正文。"""
-    type: Literal["thinking", "content", "system"]
+    type: Literal["thinking", "content", "system", "tool_call", "tool_result"]
     text: str

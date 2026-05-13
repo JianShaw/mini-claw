@@ -6,6 +6,7 @@ from claw.agent import MiniClaw
 from claw.channels.local import LocalDelivery
 from claw.runner import EchoAgentRunner
 from claw.session import InMemorySessionStore
+from claw.tools import Tool, ToolsRegistry
 from claw.types import StreamChunk
 
 
@@ -127,3 +128,38 @@ async def test_mini_claw_delete_session() -> None:
     sessions = await claw.list_sessions()
     assert len(sessions) == 1
     assert sessions[0].session_id == new.session_id
+
+
+# --- ToolsRegistry 注入测试 ---
+
+
+def test_mini_claw_without_tools_registry_unchanged() -> None:
+    """不传 tools_registry 时行为与原来一致。"""
+    delivery = LocalDelivery()
+    claw = MiniClaw(
+        delivery=delivery,
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+    )
+    assert claw.reply("hello").text == "echo: hello"
+
+
+async def test_mini_claw_with_tools_registry() -> None:
+    """传入 tools_registry 时应传递给 agent runner（通过 DeepSeekAgentRunner 接收）。"""
+    registry = ToolsRegistry()
+
+    async def _handler(args: dict) -> str:
+        return "ok"
+
+    registry.register(Tool(name="test_tool", description="test", handler=_handler))
+
+    delivery = LocalDelivery()
+    claw = MiniClaw(
+        delivery=delivery,
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+        tools_registry=registry,
+    )
+    # 使用 areply 而不是 reply，因为 reply() 内部调用 asyncio.run()，在 async 测试中会冲突
+    reply = await claw.areply("hello")
+    assert reply.text == "echo: hello"

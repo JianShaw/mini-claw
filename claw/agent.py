@@ -13,6 +13,7 @@ from claw.deepseek import DeepSeekAgentRunner
 from claw.ports import AgentRunner, SessionStore
 from claw.session import JsonlSessionStore
 from claw.ports import Delivery
+from claw.tools import ToolsRegistry
 from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
 
 
@@ -46,10 +47,11 @@ class MiniClaw:
         auto_compact: bool = True,
         max_tokens: int | None = None,
         keep_rounds: int | None = None,
+        tools_registry: ToolsRegistry | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
-        runner = agent_runner or DeepSeekAgentRunner(api_key=api_key)
+        runner = agent_runner or DeepSeekAgentRunner(api_key=api_key, tools_registry=tools_registry)
         self._session_store = session_store or JsonlSessionStore()
 
         # 环境变量优先，参数次之，最后用默认值

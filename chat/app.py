@@ -7,6 +7,8 @@ import asyncio
 from dotenv import load_dotenv
 
 from claw.agent import MiniClaw
+from claw.tools import ToolsRegistry
+from claw.builtin_tools import register_all
 from claw.types import StreamChunk
 
 # ANSI 灰色文字用于显示 thinking 内容，黄色用于系统通知
@@ -37,6 +39,10 @@ class _ChunkPrinter:
         if chunk.type == "system":
             # 系统通知（压缩事件等），独立一行显示
             print(f"\n{_SYSTEM_STYLE}{chunk.text}{_SYSTEM_RESET}", flush=True)
+        elif chunk.type == "tool_call":
+            print(f"\n{_SYSTEM_STYLE}[calling tool...]{_SYSTEM_RESET}", end="", flush=True)
+        elif chunk.type == "tool_result":
+            print(f"\n{_SYSTEM_STYLE}[tool result: {chunk.text[:80]}...]{_SYSTEM_RESET}", end="", flush=True)
         elif chunk.type == "thinking":
             if not self._in_thinking:
                 print(_THINK_PREFIX, end="", flush=True)
@@ -110,9 +116,16 @@ async def _handle_command(text: str, claw: MiniClaw) -> bool:
     return False
 
 
+def _make_claw() -> MiniClaw:
+    """创建带内置工具的 MiniClaw 实例。"""
+    registry = ToolsRegistry()
+    register_all(registry)
+    return MiniClaw(tools_registry=registry)
+
+
 async def run(claw: MiniClaw | None = None) -> None:
     load_dotenv()
-    claw = claw or MiniClaw()
+    claw = claw or _make_claw()
 
     print("Mini Claw chat")
     print("Type /help for commands, /exit to quit.")
