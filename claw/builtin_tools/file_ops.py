@@ -64,10 +64,13 @@ def register(
         try:
             if _contains_symlink(path, root):
                 return f"Error: symlink not allowed: {path}"
-            content = path.read_text(encoding=encoding)
-            if len(content) > 1_000_000:
-                return content[:1_000_000] + "\n... (truncated, file too large)"
-            return content
+            # 先检查文件大小，避免将大文件完整读入内存
+            file_size = path.stat().st_size
+            if file_size > 1_000_000:
+                # 只读取前 1MB 内容
+                content = path.read_text(encoding=encoding)[:1_000_000]
+                return content + "\n... (truncated, file too large)"
+            return path.read_text(encoding=encoding)
         except FileNotFoundError:
             return f"Error: file not found: {path}"
         except PermissionError:

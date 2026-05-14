@@ -71,6 +71,7 @@ class ChatMessage:
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
+    reasoning_content: str | None = None
 
 
 @dataclass(slots=True)

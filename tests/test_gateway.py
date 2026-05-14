@@ -183,6 +183,44 @@ async def test_gateway_stream_reuses_existing_session() -> None:
 # --- handle_stream thinking 测试 ---
 
 
+class _ToolCallRunner:
+    """模拟产出 tool_call + tool_result + content 的 Agent Runner。"""
+
+    async def run(self, session, message):
+        from claw.types import ChatMessage as CM, AgentReply as AR
+        session.history.append(CM(role="user", content=message.text))
+        session.history.append(CM(role="assistant", content="final answer"))
+        return AR(text="final answer")
+
+    async def run_stream(self, session, message):
+        from claw.types import ChatMessage as CM
+        session.history.append(CM(role="user", content=message.text))
+        yield StreamChunk(type="tool_call", text="")
+        yield StreamChunk(type="tool_result", text="file contents here")
+        yield StreamChunk(type="content", text="final answer")
+
+
+async def test_gateway_stream_only_content_in_history() -> None:
+    """tool_call / tool_result chunk 不应写入 history，只有 content 进入。"""
+    delivery = LocalDelivery()
+    gateway = RuntimeGateway(
+        session_store=InMemorySessionStore(),
+        agent_runner=_ToolCallRunner(),
+        delivery=delivery,
+    )
+    chunks: list[StreamChunk] = []
+    async for chunk in gateway.handle_stream(_msg("hello")):
+        chunks.append(chunk)
+
+    # 应产出 3 个 chunk
+    assert len(chunks) == 3
+
+    # history 中 assistant 内容应只有 content，不含 tool_result
+    _, reply = delivery.sent[0]
+    assert reply.text == "final answer"
+    assert "file contents" not in reply.text
+
+
 class _ThinkingRunner:
     """模拟产出 thinking + content 的 Agent Runner。"""
 

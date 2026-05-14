@@ -92,8 +92,9 @@ class RuntimeGateway:
         async for chunk in self._agent_runner.run_stream(session, message):
             if chunk.type == "thinking":
                 full_thinking += chunk.text
-            else:
+            elif chunk.type == "content":
                 full_text += chunk.text
+            # tool_call / tool_result / system 类型的 chunk 仅作为 UI 事件透传，不聚合到回复文本
             yield chunk
 
         # 流结束，保存完整 assistant message（仅 content 部分）

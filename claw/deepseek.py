@@ -79,11 +79,15 @@ class DeepSeekAgentRunner:
                     "content": m.content,
                 })
             elif m.role == "assistant" and m.tool_calls:
-                messages.append({
+                msg_dict: dict[str, Any] = {
                     "role": "assistant",
                     "content": None,
                     "tool_calls": m.tool_calls,
-                })
+                }
+                # thinking 模式：恢复历史中的 reasoning_content
+                if m.reasoning_content:
+                    msg_dict["reasoning_content"] = m.reasoning_content
+                messages.append(msg_dict)
             else:
                 messages.append({"role": m.role, "content": m.content})
         return messages
@@ -121,8 +125,8 @@ class DeepSeekAgentRunner:
             ]
             # 思考模式：assistant 消息必须携带 reasoning_content 传回 API
             reasoning = getattr(msg, "reasoning_content", None) if self.thinking else None
-            # 记录 assistant 的工具调用消息
-            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_data))
+            # 记录 assistant 的工具调用消息（保存 reasoning_content 以便后续恢复）
+            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_data, reasoning_content=reasoning))
             api_assistant_msg: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": tool_calls_data}
             if reasoning:
                 api_assistant_msg["reasoning_content"] = reasoning
@@ -208,8 +212,8 @@ class DeepSeekAgentRunner:
                             if tc_delta.function.arguments:
                                 tool_calls_accum[idx]["function"]["arguments"] += tc_delta.function.arguments
 
-            # 没有工具调用 → 流结束
-            if finish_reason != "tool_calls" or not tool_calls_accum:
+            # 以 tool_calls_accum 为主判断是否有工具调用，finish_reason 作为辅助
+            if not tool_calls_accum:
                 return
 
             # 有工具调用 → 执行工具，通知调用方，然后继续循环
@@ -220,8 +224,8 @@ class DeepSeekAgentRunner:
                 text="",
             )
 
-            # 记录 assistant 的工具调用消息
-            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_list))
+            # 记录 assistant 的工具调用消息（保存 reasoning_content 以便后续恢复）
+            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_list, reasoning_content=full_reasoning or None))
             api_assistant_msg: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": tool_calls_list}
             if full_reasoning:
                 api_assistant_msg["reasoning_content"] = full_reasoning

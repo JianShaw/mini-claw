@@ -32,8 +32,9 @@ def register_all(registry: ToolsRegistry) -> None:
     register_file_search(registry)
     register_file_patch(registry)
 
-    # Shell 工具：默认不注册，需手动注册并指定白名单
-    # 如需启用：shell.register(registry, allowed_commands=["ls", "cat", "echo"])
+    # Shell 工具：注册并指定白名单
+    from claw.builtin_tools.shell import register as register_shell
+    register_shell(registry, allowed_commands=["git"])
 
     # python_test：默认不注册，需手动注册
     # 如需启用：python_test.register(registry)

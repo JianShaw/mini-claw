@@ -204,6 +204,23 @@ async def test_shell_rejects_nonexistent_command() -> None:
     assert "Error" in result
 
 
+@pytest.mark.asyncio
+async def test_shell_rejects_path_in_command() -> None:
+    """带路径的命令应被拒绝，只允许裸命令名。"""
+    registry = ToolsRegistry()
+    register_shell(registry, allowed_commands=["python"])
+    # Unix 风格路径
+    result = await registry.execute("shell", {"command": "/usr/bin/python -c 'print(1)'"})
+    assert "Error" in result
+    assert "path" in result.lower()
+    # Windows 风格路径
+    result2 = await registry.execute("shell", {"command": "C:\\Python\\python.exe -c '1'"})
+    assert "Error" in result2
+    # 相对路径
+    result3 = await registry.execute("shell", {"command": "./python -c '1'"})
+    assert "Error" in result3
+
+
 # --- file_ops (workspace root 边界) ---
 
 
@@ -336,6 +353,21 @@ async def test_file_read_rejects_symlink(tmp_path) -> None:
     result = await registry.execute("file_read", {"path": "link.txt"})
     assert "Error" in result
     assert "symlink" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_file_read_truncates_large_file(tmp_path) -> None:
+    """大文件应先检查 stat 大小再截断，不应完整读入内存。"""
+    registry = ToolsRegistry()
+    register_file_ops(registry, workspace_root=str(tmp_path))
+
+    # 创建 > 1MB 的文件
+    big_content = "x" * 1_100_000
+    (tmp_path / "big.txt").write_text(big_content)
+
+    result = await registry.execute("file_read", {"path": "big.txt"})
+    assert "truncated" in result
+    assert len(result) < 1_100_000  # 不应返回完整文件
 
 
 # --- time_tool ---

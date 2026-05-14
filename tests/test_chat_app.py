@@ -23,7 +23,9 @@ def _echo_claw() -> MiniClaw:
 def test_chat_app_exits_on_exit_command(monkeypatch, capsys) -> None:
     """输入 /exit 时应正常退出，并打印欢迎信息。"""
     monkeypatch.setattr("builtins.input", lambda _: "/exit")
-    asyncio.run(run(_echo_claw()))
+    claw = _echo_claw()
+    # start/stop 在 run() 内部调用，不需要手动调用
+    asyncio.run(run(claw))
     captured = capsys.readouterr()
     assert "Mini Claw chat" in captured.out
 
@@ -32,7 +34,8 @@ def test_chat_app_prints_agent_reply_for_user_message(monkeypatch, capsys) -> No
     """输入一条消息后再退出，应打印 Agent 的 echo 回复。"""
     inputs = iter(["hello", "/exit"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
-    asyncio.run(run(_echo_claw()))
+    claw = _echo_claw()
+    asyncio.run(run(claw))
     captured = capsys.readouterr()
     assert "echo: hello" in captured.out
 
@@ -59,6 +62,7 @@ def test_chat_app_prints_thinking_with_prefix(monkeypatch, capsys) -> None:
         agent_runner=_ThinkingRunner(),
         session_store=InMemorySessionStore(),
     )
+    # 不传 mcp_config_path，避免 start() 尝试连接
     inputs = iter(["hi", "/exit"])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
     asyncio.run(run(claw))
@@ -125,3 +129,29 @@ def test_chat_app_compact_empty_session(monkeypatch, capsys) -> None:
     asyncio.run(run(_echo_claw()))
     captured = capsys.readouterr()
     assert "No active session" in captured.out or "empty" in captured.out.lower()
+
+
+# --- MCP 命令测试 ---
+
+
+def test_chat_app_mcp_command_not_configured(monkeypatch, capsys) -> None:
+    """/mcp 在无 MCP 配置时应提示未配置。"""
+    claw = MiniClaw(
+        delivery=LocalDelivery(),
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+    )
+    inputs = iter(["/mcp", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    asyncio.run(run(claw))
+    captured = capsys.readouterr()
+    assert "MCP not configured" in captured.out
+
+
+def test_chat_app_help_shows_mcp_command(monkeypatch, capsys) -> None:
+    """/help 应包含 /mcp 命令说明。"""
+    inputs = iter(["/help", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    asyncio.run(run(_echo_claw()))
+    captured = capsys.readouterr()
+    assert "/mcp" in captured.out

@@ -24,6 +24,7 @@ Commands:
   /select ID - 切换到指定会话
   /delete ID - 删除指定会话
   /compact   - 压缩当前会话上下文
+  /mcp       - 显示 MCP 服务器状态
   /help      - 显示帮助
   /exit      - 退出"""
 
@@ -113,6 +114,18 @@ async def _handle_command(text: str, claw: MiniClaw) -> bool:
         print(_COMMANDS_HELP)
         return True
 
+    if text == "/mcp":
+        statuses = claw.get_mcp_status()
+        if not statuses:
+            print("MCP not configured.")
+        else:
+            for s in statuses:
+                status = "connected" if s.connected else "disconnected"
+                tools = f", {s.tool_count} tools" if s.connected else ""
+                err = f" ({s.error})" if s.error else ""
+                print(f"  {s.name}: {status}{tools}{err}")
+        return True
+
     return False
 
 
@@ -120,33 +133,40 @@ def _make_claw() -> MiniClaw:
     """创建带内置工具的 MiniClaw 实例。"""
     registry = ToolsRegistry()
     register_all(registry)
-    return MiniClaw(tools_registry=registry)
+    return MiniClaw(tools_registry=registry, mcp_config_path="mcp_config.json")
 
 
 async def run(claw: MiniClaw | None = None) -> None:
     load_dotenv()
     claw = claw or _make_claw()
 
+    # 启动 MCP 连接
+    await claw.start()
+
     print("Mini Claw chat")
     print("Type /help for commands, /exit to quit.")
 
-    while True:
-        text = input("you> ").strip()
-        if not text:
-            continue
-        if text in {"/exit", "/quit"}:
-            break
+    try:
+        while True:
+            text = input("you> ").strip()
+            if not text:
+                continue
+            if text in {"/exit", "/quit"}:
+                break
 
-        # 会话管理命令拦截
-        if text.startswith("/") and await _handle_command(text, claw):
-            continue
+            # 会话管理命令拦截
+            if text.startswith("/") and await _handle_command(text, claw):
+                continue
 
-        print("claw> ", end="", flush=True)
-        printer = _ChunkPrinter()
-        async for chunk in claw.areply_stream(text):
-            printer.print(chunk)
-        printer.finish()
-        print()
+            print("claw> ", end="", flush=True)
+            printer = _ChunkPrinter()
+            async for chunk in claw.areply_stream(text):
+                printer.print(chunk)
+            printer.finish()
+            print()
+    finally:
+        # 停止 MCP 连接
+        await claw.stop()
 
 
 def main() -> None:

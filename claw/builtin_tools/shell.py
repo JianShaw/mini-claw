@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-from pathlib import Path
 from typing import Any
 
 from claw.tools import Tool, ToolsRegistry
@@ -37,7 +36,12 @@ def _make_handler(
         if not parts:
             return "Error: empty command"
 
-        cmd_name = Path(parts[0]).name
+        # 安全：拒绝带路径的命令（如 /usr/bin/python、./malicious），
+        # 只允许裸命令名（如 python、ls），防止路径遍历绕过白名单
+        if "/" in parts[0] or "\\" in parts[0]:
+            return f"Error: path in command not allowed, use bare command name: {parts[0]}"
+
+        cmd_name = parts[0]
 
         # 白名单检查：只允许指定的命令
         if allowed is not None:

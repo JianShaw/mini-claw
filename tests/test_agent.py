@@ -163,3 +163,33 @@ async def test_mini_claw_with_tools_registry() -> None:
     # 使用 areply 而不是 reply，因为 reply() 内部调用 asyncio.run()，在 async 测试中会冲突
     reply = await claw.areply("hello")
     assert reply.text == "echo: hello"
+
+
+# --- MCP 集成测试 ---
+
+
+async def test_mini_claw_start_stop_without_mcp() -> None:
+    """不传 mcp_config_path 时 start/stop 应为空操作。"""
+    delivery = LocalDelivery()
+    claw = MiniClaw(
+        delivery=delivery,
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+    )
+    await claw.start()
+    assert claw.get_mcp_status() == []
+    await claw.stop()
+
+
+async def test_mini_claw_start_with_nonexistent_config() -> None:
+    """mcp_config_path 指向不存在的文件时应静默跳过。"""
+    delivery = LocalDelivery()
+    claw = MiniClaw(
+        delivery=delivery,
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+        mcp_config_path="/nonexistent/mcp_config.json",
+    )
+    await claw.start()
+    assert claw.get_mcp_status() == []
+    await claw.stop()

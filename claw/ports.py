@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
 
@@ -66,3 +66,11 @@ class ContextCompressor(Protocol):
     """上下文压缩器：检测并压缩过长的会话历史。"""
     def should_compress(self, session: Session, incoming_text: str | None = None) -> bool: ...
     async def compress(self, session: Session, *, force: bool = False) -> str | None: ...
+
+
+class McpProvider(Protocol):
+    """MCP 提供者：管理 MCP 服务器连接和工具注册。"""
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    def register_tools(self, registry: Any) -> list[str]: ...
+    def get_status(self) -> list[Any]: ...

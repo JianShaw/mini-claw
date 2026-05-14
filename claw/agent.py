@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
+from typing import Any
 
 from claw.channels.local import LocalAdapter, LocalTransport
 from claw.gateway import RuntimeGateway
@@ -15,6 +17,8 @@ from claw.session import JsonlSessionStore
 from claw.ports import Delivery
 from claw.tools import ToolsRegistry
 from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
+
+logger = logging.getLogger(__name__)
 
 
 def _env_int(key: str, default: int) -> int:
@@ -48,6 +52,7 @@ class MiniClaw:
         max_tokens: int | None = None,
         keep_rounds: int | None = None,
         tools_registry: ToolsRegistry | None = None,
+        mcp_config_path: str | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
@@ -80,6 +85,11 @@ class MiniClaw:
             gateway=self.gateway,
             dedupe_store=InMemoryDedupeStore(),
         )
+
+        # MCP 集成：可选的外部工具源
+        self._mcp_config_path = mcp_config_path
+        self._mcp_manager: Any = None  # McpManager，延迟初始化
+        self._tools_registry = tools_registry
 
     def _routing_message(self, text: str = "") -> InboundMessage:
         """构造一条 InboundMessage 用于获取路由字段（channel/account_id/peer_id）。"""
@@ -136,6 +146,41 @@ class MiniClaw:
             f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
         )
         return session.session_id if session else None
+
+    # --- MCP 生命周期管理 ---
+
+    async def start(self) -> None:
+        """启动 MCP 连接并注册工具。无配置时为空操作。失败时清理并记录错误。"""
+        if not self._mcp_config_path:
+            return
+        try:
+            from claw.mcp.manager import McpManager
+            self._mcp_manager = McpManager.from_config_file(self._mcp_config_path)
+            await self._mcp_manager.start()
+            # 如果有工具注册表，桥接 MCP 工具
+            if self._tools_registry is not None:
+                self._mcp_manager.register_tools(self._tools_registry)
+        except Exception as exc:
+            # 启动失败时清理资源
+            if self._mcp_manager is not None:
+                try:
+                    await self._mcp_manager.stop()
+                except Exception:
+                    pass
+                self._mcp_manager = None
+            logger.error("Failed to start MCP manager: %s", exc)
+
+    async def stop(self) -> None:
+        """停止 MCP 连接，释放资源。"""
+        if self._mcp_manager is not None:
+            await self._mcp_manager.stop()
+            self._mcp_manager = None
+
+    def get_mcp_status(self) -> list[Any]:
+        """返回 MCP 服务器状态列表。"""
+        if self._mcp_manager is None:
+            return []
+        return self._mcp_manager.get_status()
 
 
 def _default_delivery() -> Delivery:
