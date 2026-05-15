@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from claw.agent import MiniClaw
 from claw.tools import ToolsRegistry
 from claw.builtin_tools import register_all
+from claw.memory import MemoryManager
 from claw.types import StreamChunk
 
 # ANSI 灰色文字用于显示 thinking 内容，黄色用于系统通知
@@ -28,6 +29,8 @@ Commands:
   /help      - 显示帮助
   /exit      - 退出"""
 
+_COMMANDS_HELP += "\n  /memory today|long|update|distill - manage memory files"
+
 
 class _ChunkPrinter:
     """流式 chunk 打印器：跟踪 thinking↔content 状态切换，
@@ -41,7 +44,7 @@ class _ChunkPrinter:
             # 系统通知（压缩事件等），独立一行显示
             print(f"\n{_SYSTEM_STYLE}{chunk.text}{_SYSTEM_RESET}", flush=True)
         elif chunk.type == "tool_call":
-            print(f"\n{_SYSTEM_STYLE}[calling tool...]{_SYSTEM_RESET}", end="", flush=True)
+            print(f"\n{_SYSTEM_STYLE}[calling {chunk.text} tool...]{_SYSTEM_RESET}", end="", flush=True)
         elif chunk.type == "tool_result":
             print(f"\n{_SYSTEM_STYLE}[tool result: {chunk.text[:80]}...]{_SYSTEM_RESET}", end="", flush=True)
         elif chunk.type == "thinking":
@@ -126,6 +129,25 @@ async def _handle_command(text: str, claw: MiniClaw) -> bool:
                 print(f"  {s.name}: {status}{tools}{err}")
         return True
 
+    if text.startswith("/memory"):
+        parts = text.split(maxsplit=1)
+        action = parts[1].strip() if len(parts) > 1 else "today"
+        if action == "today":
+            content = await claw.memory_today()
+            print(content if content else "No daily memory.")
+        elif action == "long":
+            content = await claw.memory_long()
+            print(content if content else "No long-term memory.")
+        elif action == "update":
+            updated = await claw.update_memory_today()
+            print("Daily memory updated." if updated else "No active session to update.")
+        elif action == "distill":
+            added = await claw.distill_memory()
+            print(f"Long-term memory updated. Added {added} item(s).")
+        else:
+            print("Usage: /memory [today|long|update|distill]")
+        return True
+
     return False
 
 
@@ -133,7 +155,11 @@ def _make_claw() -> MiniClaw:
     """创建带内置工具的 MiniClaw 实例。"""
     registry = ToolsRegistry()
     register_all(registry)
-    return MiniClaw(tools_registry=registry, mcp_config_path="mcp_config.json")
+    return MiniClaw(
+        tools_registry=registry,
+        mcp_config_path="mcp_config.json",
+        memory_manager=MemoryManager(),
+    )
 
 
 async def run(claw: MiniClaw | None = None) -> None:

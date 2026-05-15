@@ -229,6 +229,21 @@ async def test_build_messages_without_summary_no_system() -> None:
     assert messages[0]["role"] == "user"
 
 
+async def test_build_messages_includes_memory_context_as_system() -> None:
+    runner = DeepSeekAgentRunner(api_key="test", thinking=False)
+
+    session = create_session(_msg())
+    session.metadata["memory_context"] = "[Memory Context]\n- remembered"
+    session.history.append(ChatMessage(role="user", content="hello"))
+
+    messages = runner._build_messages(session)
+
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert "remembered" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+
+
 # --- 工具调用测试 ---
 
 

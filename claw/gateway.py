@@ -24,12 +24,14 @@ class RuntimeGateway:
         delivery: Delivery,
         default_agent_id: str = "default-agent",
         compressor: ContextCompressor | None = None,
+        memory_manager: Any | None = None,
     ) -> None:
         self._session_store = session_store
         self._agent_runner = agent_runner
         self._delivery = delivery
         self._default_agent_id = default_agent_id
         self._compressor = compressor
+        self._memory_manager = memory_manager
 
     def _peer_key(self, message: InboundMessage) -> str:
         return build_session_key(message)
@@ -56,11 +58,40 @@ class RuntimeGateway:
             await self._session_store.save(session)
         return summary
 
+    async def _inject_memory_context(self, session: Session, message: InboundMessage) -> None:
+        """在调用 runner 前准备记忆上下文。
+
+        Gateway 不直接拼 LLM messages，而是把 memory_context 放进
+        session.metadata；具体 runner 再决定如何写入提示词。
+        """
+        # 无 memory manager 时清理旧 context，保持兼容性
+        if self._memory_manager is None:
+            session.metadata.pop("memory_context", None)
+            return
+        context = await self._memory_manager.build_context(message)
+        if context:
+            session.metadata["memory_context"] = context
+        else:
+            session.metadata.pop("memory_context", None)
+
+    async def _maybe_update_daily_memory(self, session: Session, *, force: bool = False) -> None:
+        """按策略更新 daily memory；无 memory manager 时保持空操作。"""
+        if self._memory_manager is None:
+            return
+        await self._memory_manager.maybe_update_daily(session, force=force)
+
+    async def _distill_memory(self) -> None:
+        """compact 后把 daily memory 的长期候选合并进 MEMORY.md。"""
+        if self._memory_manager is None:
+            return
+        await self._memory_manager.distill_daily_to_long_term()
+
     async def handle_inbound_message(self, message: InboundMessage) -> AgentReply:
         session = await self._get_or_create_session(message)
 
         # 自动压缩：在调 runner 之前检查并执行，成功后立即持久化
         compact_summary = await self._auto_compress_if_needed(session, message.text)
+        await self._inject_memory_context(session, message)
 
         # AgentRunner 会往 session.history 追加记录
         reply = await self._agent_runner.run(session, message)
@@ -71,6 +102,7 @@ class RuntimeGateway:
             reply.metadata["compact_summary"] = compact_summary
 
         message.metadata["session_id"] = session.session_id
+        await self._maybe_update_daily_memory(session)
         await self._session_store.save(session)
         await self._delivery.send(message, reply)
 
@@ -86,6 +118,7 @@ class RuntimeGateway:
         compact_summary = await self._auto_compress_if_needed(session, message.text)
         if compact_summary is not None:
             yield StreamChunk(type="system", text=f"[auto-compact] {compact_summary}")
+        await self._inject_memory_context(session, message)
 
         full_text = ""
         full_thinking = ""
@@ -100,6 +133,7 @@ class RuntimeGateway:
         # 流结束，保存完整 assistant message（仅 content 部分）
         session.history.append(ChatMessage(role="assistant", content=full_text))
         message.metadata["session_id"] = session.session_id
+        await self._maybe_update_daily_memory(session)
         await self._session_store.save(session)
         metadata: dict[str, Any] = {}
         if full_thinking:
@@ -153,17 +187,22 @@ class RuntimeGateway:
         session = await self._session_store.get_active(peer_key)
         if session is None or not session.history:
             return None
+        await self._maybe_update_daily_memory(session, force=True)
 
         # 有 compressor：使用 force=True，保留最近 N 轮
         if self._compressor is not None:
             summary = await self._compressor.compress(session, force=True)
             if summary is not None:
                 await self._session_store.save(session)
+                await self._distill_memory()
                 return summary
             return None
 
         # Fallback：全量压缩（兼容无 compressor 的测试 runner）
-        return await self._full_compact(session)
+        summary = await self._full_compact(session)
+        if summary is not None:
+            await self._distill_memory()
+        return summary
 
     async def _full_compact(self, session: Session) -> str | None:
         """全量压缩 fallback：清空 history，正确设置 history_offset。"""

@@ -36,7 +36,21 @@ The chat app supports managing multiple independent conversations:
 | `/select <id>` | Switch to a specific session |
 | `/delete <id>` | Delete a session |
 | `/compact` | Compress current session context into a summary |
+| `/mcp` | Show MCP server connection status |
+| `/memory today` | View today's daily memory |
+| `/memory long` | View long-term memory |
+| `/memory update` | Force update today's daily memory from current session |
+| `/memory distill` | Extract long-term candidates from daily memory into MEMORY.md |
 | `/help` | Show available commands |
+
+### Memory System
+
+Memory is managed at two levels:
+
+- **Daily memory** (`data/memory/daily/YYYY-MM-DD.md`) — short-term context, auto-updated every 3 user messages, or on-demand via `/memory update`.
+- **Long-term memory** (`data/memory/MEMORY.md`) — stable preferences and decisions, populated from daily candidates via `/memory distill`.
+
+Both are automatically injected into every LLM call as background context. User messages containing keywords like "prefer", "remember", "希望", "记住" are flagged as long-term candidates.
 
 Example workflow:
 

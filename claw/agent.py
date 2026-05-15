@@ -53,6 +53,7 @@ class MiniClaw:
         keep_rounds: int | None = None,
         tools_registry: ToolsRegistry | None = None,
         mcp_config_path: str | None = None,
+        memory_manager: Any | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
@@ -79,6 +80,7 @@ class MiniClaw:
             agent_runner=runner,
             delivery=self.delivery,
             compressor=compressor,
+            memory_manager=memory_manager,
         )
         self.processor = ChannelProcessor(
             adapter=LocalAdapter(),
@@ -90,6 +92,7 @@ class MiniClaw:
         self._mcp_config_path = mcp_config_path
         self._mcp_manager: Any = None  # McpManager，延迟初始化
         self._tools_registry = tools_registry
+        self._memory_manager = memory_manager
 
     def _routing_message(self, text: str = "") -> InboundMessage:
         """构造一条 InboundMessage 用于获取路由字段（channel/account_id/peer_id）。"""
@@ -138,6 +141,37 @@ class MiniClaw:
         """压缩当前会话的上下文，返回生成的摘要。"""
         msg = self._routing_message()
         return await self.gateway.compact_session(msg)
+
+    async def memory_today(self) -> str:
+        """读取当天 daily memory，用于 CLI 的 /memory today。"""
+        if self._memory_manager is None:
+            return ""
+        return self._memory_manager.daily_store.read(self._memory_manager.today())
+
+    async def memory_long(self) -> str:
+        """读取长期记忆，用于 CLI 的 /memory long。"""
+        if self._memory_manager is None:
+            return ""
+        return self._memory_manager.long_store.read()
+
+    async def update_memory_today(self) -> bool:
+        """手动强制更新当天 daily memory。"""
+        if self._memory_manager is None:
+            return False
+        msg = self._routing_message()
+        session = await self._session_store.get_active(
+            f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
+        )
+        if session is None:
+            return False
+        return await self._memory_manager.force_update_daily(session)
+
+    async def distill_memory(self) -> int:
+        """手动把 daily memory 的长期候选提炼进 MEMORY.md。"""
+        if self._memory_manager is None:
+            return 0
+        result = await self._memory_manager.distill_daily_to_long_term()
+        return result.added
 
     async def get_active_session_id(self) -> str | None:
         """获取当前活跃会话的 ID。"""

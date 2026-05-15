@@ -71,6 +71,14 @@ class DeepSeekAgentRunner:
                 "role": "system",
                 "content": f"以下是之前对话的摘要：\n{session.summary}",
             })
+        memory_context = session.metadata.get("memory_context")
+        if memory_context:
+            # 记忆上下文由 Gateway/MemoryManager 准备，这里作为独立 system
+            # message 注入；优先级说明写在 memory_context 模板里。
+            messages.append({
+                "role": "system",
+                "content": str(memory_context),
+            })
         for m in session.history:
             if m.role == "tool":
                 messages.append({
@@ -219,9 +227,11 @@ class DeepSeekAgentRunner:
             # 有工具调用 → 执行工具，通知调用方，然后继续循环
             tool_calls_list = [tool_calls_accum[i] for i in sorted(tool_calls_accum.keys())]
 
+            # 通知调用方即将执行的工具名称
+            tool_names = ", ".join(tc["function"]["name"] for tc in tool_calls_list)
             yield StreamChunk(
                 type="tool_call",
-                text="",
+                text=tool_names,
             )
 
             # 记录 assistant 的工具调用消息（保存 reasoning_content 以便后续恢复）

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from datetime import date
 
 from claw.channels.local import LocalDelivery
 from claw.compressor import ContextCompressor
 from claw.gateway import RuntimeGateway
+from claw.memory import MemoryManager
 from claw.runner import EchoAgentRunner
 from claw.session import InMemorySessionStore, create_session
 from claw.types import AgentReply, ChatMessage, InboundMessage, StreamChunk
@@ -99,6 +101,63 @@ async def test_gateway_returns_agent_reply() -> None:
     )
     reply = await gateway.handle_inbound_message(_msg("test"))
     assert reply.text == "echo: test"
+
+
+class _MemoryContextRunner:
+    def __init__(self) -> None:
+        self.seen_context = ""
+
+    async def run(self, session, message):
+        from claw.types import ChatMessage as CM, AgentReply as AR
+        self.seen_context = session.metadata.get("memory_context", "")
+        session.history.append(CM(role="user", content=message.text))
+        session.history.append(CM(role="assistant", content="ok"))
+        return AR(text="ok")
+
+    async def run_stream(self, session, message):
+        yield StreamChunk(type="content", text="ok")
+
+
+async def test_gateway_injects_memory_context_before_runner(tmp_path) -> None:
+    """Memory context should be available before the runner builds LLM messages."""
+    manager = MemoryManager(tmp_path, today_provider=lambda: date(2026, 5, 14))
+    manager.long_store.write("# Memory\n- Long-term fact\n")
+    manager.daily_store.write(date(2026, 5, 14), "# Daily\n- Daily fact\n")
+    runner = _MemoryContextRunner()
+    gateway = RuntimeGateway(
+        session_store=InMemorySessionStore(),
+        agent_runner=runner,
+        delivery=LocalDelivery(),
+        memory_manager=manager,
+    )
+
+    await gateway.handle_inbound_message(_msg("hello"))
+
+    assert "Long-term fact" in runner.seen_context
+    assert "Daily fact" in runner.seen_context
+
+
+async def test_gateway_updates_daily_memory_after_three_user_messages(tmp_path) -> None:
+    manager = MemoryManager(
+        tmp_path,
+        today_provider=lambda: date(2026, 5, 14),
+        update_every=3,
+    )
+    gateway = RuntimeGateway(
+        session_store=InMemorySessionStore(),
+        agent_runner=EchoAgentRunner(),
+        delivery=LocalDelivery(),
+        memory_manager=manager,
+    )
+
+    await gateway.handle_inbound_message(_msg("first"))
+    await gateway.handle_inbound_message(_msg("second"))
+    assert manager.daily_store.read(date(2026, 5, 14)) == ""
+
+    await gateway.handle_inbound_message(_msg("希望 memory 自动更新"))
+
+    daily = manager.daily_store.read(date(2026, 5, 14))
+    assert "希望 memory 自动更新" in daily
 
 
 # --- handle_stream 测试 ---

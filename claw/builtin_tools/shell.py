@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 from typing import Any
 
@@ -48,6 +49,12 @@ def _make_handler(
             if cmd_name not in allowed:
                 return f"Error: command '{cmd_name}' not in allowed list: {allowed}"
 
+        # Windows 上 echo/pwd/sleep 可能不是独立可执行文件。这里用安全的
+        # Python 内建模拟它们，既保持跨平台测试稳定，也不启用 shell。
+        builtin_result = await _run_portable_builtin(parts, work_dir, cmd_timeout)
+        if builtin_result is not None:
+            return builtin_result
+
         try:
             # 使用 exec 而非 shell，避免 &&、|、; 等被解释为 shell 操作符
             proc = await asyncio.create_subprocess_exec(
@@ -77,6 +84,29 @@ def _make_handler(
         return "\n".join(parts_out)
 
     return handler
+
+
+async def _run_portable_builtin(
+    parts: list[str],
+    work_dir: str | None,
+    timeout: int,
+) -> str | None:
+    """跨平台处理少量简单命令，不经过系统 shell。"""
+    cmd_name = parts[0]
+    if cmd_name == "echo":
+        output = " ".join(parts[1:])
+        return f"stdout:\n{output}\nexit code: 0" if output else "exit code: 0"
+    if cmd_name == "pwd":
+        return f"stdout:\n{work_dir or os.getcwd()}\nexit code: 0"
+    if cmd_name == "sleep":
+        seconds = float(parts[1]) if len(parts) > 1 else 1.0
+        try:
+            #当前协程等一会儿，模拟 sleep 效果，同时响应超时取消
+            await asyncio.wait_for(asyncio.sleep(seconds), timeout=timeout)
+        except asyncio.TimeoutError:
+            return f"Error: command timed out after {timeout}s"
+        return "exit code: 0"
+    return None
 
 
 def register(
