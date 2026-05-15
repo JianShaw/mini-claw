@@ -18,6 +18,12 @@ if True:  # 避免循环导入
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 
+_TOOL_LIMIT_PROMPT = (
+    "工具调用次数已达上限。请根据目前已有的工具调用结果，"
+    "总结你目前发现的信息，并给出你能给出的最佳回答。"
+    "不要尝试继续调用工具。"
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +68,34 @@ class DeepSeekAgentRunner:
         if self._has_tools():
             kwargs["tools"] = self._tools_registry.to_openai_tools()  # type: ignore[union-attr]
         return kwargs
+
+    async def _finalize_tool_limit(
+        self, session: Session, messages: list[dict[str, Any]],
+    ) -> str:
+        """工具迭代耗尽时，注入提示让 LLM 做最终总结。
+
+        不带 tools 调用 LLM，避免继续工具调用。API 失败时 fallback 到静态文本。
+        """
+        messages.append({"role": "user", "content": _TOOL_LIMIT_PROMPT})
+        session.history.append(ChatMessage(role="user", content=_TOOL_LIMIT_PROMPT))
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "extra_body": {"thinking": self._thinking_options()},
+        }
+
+        try:
+            response = await self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            logger.error("Finalize tool limit API error: %s", e)
+            fallback = "抱歉，工具调用次数已达上限，无法继续操作。"
+            session.history.append(ChatMessage(role="assistant", content=fallback))
+            return fallback
+
+        text = response.choices[0].message.content or ""
+        session.history.append(ChatMessage(role="assistant", content=text))
+        return text
 
     def _build_messages(self, session: Session) -> list[dict[str, Any]]:
         """构建发给 LLM 的 messages 列表，正确处理工具调用和工具结果消息。"""
@@ -160,10 +194,11 @@ class DeepSeekAgentRunner:
             # 下一轮循环使用更新后的 messages
             kwargs = self._build_kwargs(messages)
 
-        # 超过最大迭代次数
+        # 超过最大迭代次数 → 让 LLM 做最终总结
         logger.warning("Tool iteration limit (%d) reached", self._max_tool_iterations)
+        final_text = await self._finalize_tool_limit(session, messages)
         return AgentReply(
-            text="[tool call limit reached]",
+            text=final_text,
             metadata={"tool_iterations_exhausted": True},
         )
 
@@ -264,5 +299,7 @@ class DeepSeekAgentRunner:
 
             iterations += 1
 
-        # 超过最大迭代次数
-        yield StreamChunk(type="system", text="[tool call limit reached]")
+        # 超过最大迭代次数 → 让 LLM 做最终总结
+        logger.warning("Tool iteration limit (%d) reached", self._max_tool_iterations)
+        final_text = await self._finalize_tool_limit(session, messages)
+        yield StreamChunk(type="content", text=final_text)

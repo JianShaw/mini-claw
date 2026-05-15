@@ -376,7 +376,7 @@ async def test_run_tool_error_graceful() -> None:
 
 
 async def test_run_tool_iteration_limit() -> None:
-    """超过最大迭代次数时应返回提示。"""
+    """超过最大迭代次数时应调用 LLM 生成总结。"""
     registry = ToolsRegistry()
     registry.register(Tool(name="echo", description="echo", handler=_echo_handler))
     runner = DeepSeekAgentRunner(
@@ -384,16 +384,25 @@ async def test_run_tool_iteration_limit() -> None:
         tools_registry=registry, max_tool_iterations=2,
     )
 
-    # 每次都返回 tool_calls，模拟无限循环
+    # 前 N 次返回 tool_calls（无限循环），最后一次返回总结
     tc = _mock_tool_call("call_1", "echo", '{"text": "loop"}')
     loop_response = _mock_response(tool_calls=[tc])
-    runner.client.chat.completions.create = AsyncMock(return_value=loop_response)
+    final_response = _mock_response(content="I searched but hit the limit")
+    runner.client.chat.completions.create = AsyncMock(
+        side_effect=[loop_response, loop_response, final_response]
+    )
 
     session = create_session(_msg())
     reply = await runner.run(session, _msg("loop"))
 
-    assert reply.text == "[tool call limit reached]"
+    assert reply.text == "I searched but hit the limit"
     assert reply.metadata.get("tool_iterations_exhausted") is True
+    # session history 应以 assistant 总结消息结尾
+    assert session.history[-1].role == "assistant"
+    assert session.history[-1].content == "I searched but hit the limit"
+    # 倒数第二条应为注入的 user 消息
+    assert session.history[-2].role == "user"
+    assert "工具调用次数已达上限" in session.history[-2].content
 
 
 async def test_run_invalid_json_arguments() -> None:
@@ -476,3 +485,60 @@ async def test_stream_with_tool_calls() -> None:
 
     # session history 应包含工具调用消息
     assert any(m.role == "tool" for m in session.history)
+
+
+async def test_stream_tool_iteration_limit() -> None:
+    """流式模式下超过最大迭代次数时应生成 LLM 总结作为 content chunk。"""
+    registry = ToolsRegistry()
+    registry.register(Tool(name="echo", description="echo", handler=_echo_handler))
+    runner = DeepSeekAgentRunner(
+        api_key="test", thinking=False,
+        tools_registry=registry, max_tool_iterations=1,
+    )
+
+    # 第一次流：tool_call delta
+    stream1_chunks = [
+        _mock_tool_call_chunk(0, tc_id="call_1", name="echo", arguments='{"text":"x"}'),
+    ]
+    stream1_chunks[-1].choices[0].finish_reason = "tool_calls"
+
+    # _finalize_tool_limit 做非流式调用
+    final_response = _mock_response(content="Limited summary")
+
+    runner.client.chat.completions.create = AsyncMock(
+        side_effect=[_FakeStream(stream1_chunks), final_response]
+    )
+
+    session = create_session(_msg())
+    result: list[StreamChunk] = []
+    async for chunk in runner.run_stream(session, _msg("loop")):
+        result.append(chunk)
+
+    # 最后一个 content chunk 应包含 LLM 总结
+    content_chunks = [c for c in result if c.type == "content"]
+    assert content_chunks[-1].text == "Limited summary"
+    # session history 应以 assistant 总结结尾
+    assert session.history[-1].role == "assistant"
+    assert session.history[-1].content == "Limited summary"
+
+
+async def test_run_tool_iteration_limit_api_error_fallback() -> None:
+    """工具迭代耗尽后 LLM 总结调用失败时应有 fallback。"""
+    registry = ToolsRegistry()
+    registry.register(Tool(name="echo", description="echo", handler=_echo_handler))
+    runner = DeepSeekAgentRunner(
+        api_key="test", thinking=False,
+        tools_registry=registry, max_tool_iterations=1,
+    )
+
+    tc = _mock_tool_call("call_1", "echo", '{"text": "loop"}')
+    loop_response = _mock_response(tool_calls=[tc])
+    runner.client.chat.completions.create = AsyncMock(
+        side_effect=[loop_response, RuntimeError("API down")]
+    )
+
+    session = create_session(_msg())
+    reply = await runner.run(session, _msg("loop"))
+
+    assert "工具调用次数已达上限" in reply.text
+    assert reply.metadata.get("tool_iterations_exhausted") is True
