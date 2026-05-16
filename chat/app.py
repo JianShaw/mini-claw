@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import logging
+from contextlib import suppress
+from pathlib import Path
 
 from dotenv import load_dotenv
 
+_LOG_DIR = Path("logs")
+
 from claw.agent import MiniClaw
+from claw.channels.local import LocalDelivery
 from claw.tools import ToolsRegistry
 from claw.builtin_tools import register_all
 from claw.memory import MemoryManager
@@ -30,6 +37,7 @@ Commands:
   /exit      - 退出"""
 
 _COMMANDS_HELP += "\n  /memory today|long|update|distill - manage memory files"
+_COMMANDS_HELP += "\n  /tasks - list scheduled tasks, /task run <name> - run a task"
 
 
 class _ChunkPrinter:
@@ -129,6 +137,36 @@ async def _handle_command(text: str, claw: MiniClaw) -> bool:
                 print(f"  {s.name}: {status}{tools}{err}")
         return True
 
+    if text == "/tasks":
+        statuses = claw.get_task_status()
+        if not statuses:
+            print("Scheduler not configured.")
+        else:
+            for s in statuses:
+                status = "enabled" if s["enabled"] else "disabled"
+                last = ""
+                if s["last_result"]:
+                    lr = s["last_result"]
+                    last = f" [last: {'OK' if lr.success else 'FAIL'} {lr.message}]"
+                print(f"  {s['name']} ({s['trigger_type']}, {status}){last}")
+                if s["description"]:
+                    print(f"    {s['description']}")
+        return True
+
+    if text.startswith("/task run"):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            print("Usage: /task run <name>")
+        else:
+            result = await claw.run_task(parts[2])
+            if result is None:
+                print("Scheduler not configured or task not found.")
+            elif result.success:
+                print(f"Task '{result.task_name}' completed: {result.message}")
+            else:
+                print(f"Task '{result.task_name}' failed: {result.error}")
+        return True
+
     if text.startswith("/memory"):
         parts = text.split(maxsplit=1)
         action = parts[1].strip() if len(parts) > 1 else "today"
@@ -155,11 +193,36 @@ def _make_claw() -> MiniClaw:
     """创建带内置工具的 MiniClaw 实例。"""
     registry = ToolsRegistry()
     register_all(registry)
+    delivery = LocalDelivery()
     return MiniClaw(
+        delivery=delivery,
         tools_registry=registry,
         mcp_config_path="mcp_config.json",
         memory_manager=MemoryManager(),
+        schedule_config_path="schedule_config.json",
     )
+
+
+async def _print_scheduled_deliveries(
+    delivery: LocalDelivery,
+    stream_lock: asyncio.Lock,
+) -> None:
+    """Print scheduled replies delivered while the CLI is waiting for input.
+
+    Uses stream_lock to avoid interleaving with streaming LLM output.
+    """
+    while True:
+        message, reply = await delivery.events.get()
+        if not message.metadata.get("scheduled"):
+            continue
+        text = reply.text.strip()
+        if not text:
+            continue
+        task_name = str(message.metadata.get("task_name") or "scheduled")
+        # async with = acquire() 加锁 + 退出时自动 release() 解锁
+        # 如果流式回复正在持锁，这里会等待直到流式结束
+        async with stream_lock:
+            print(f"\nclaw[{task_name}]> {text}\n", flush=True)
 
 
 async def run(claw: MiniClaw | None = None) -> None:
@@ -168,13 +231,19 @@ async def run(claw: MiniClaw | None = None) -> None:
 
     # 启动 MCP 连接
     await claw.start()
+    stream_lock = asyncio.Lock()
+    delivery_task: asyncio.Task[None] | None = None
+    if isinstance(claw.delivery, LocalDelivery):
+        delivery_task = asyncio.create_task(
+            _print_scheduled_deliveries(claw.delivery, stream_lock)
+        )
 
     print("Mini Claw chat")
     print("Type /help for commands, /exit to quit.")
 
     try:
         while True:
-            text = input("you> ").strip()
+            text = (await asyncio.to_thread(input, "you> ")).strip()
             if not text:
                 continue
             if text in {"/exit", "/quit"}:
@@ -184,18 +253,71 @@ async def run(claw: MiniClaw | None = None) -> None:
             if text.startswith("/") and await _handle_command(text, claw):
                 continue
 
-            print("claw> ", end="", flush=True)
-            printer = _ChunkPrinter()
-            async for chunk in claw.areply_stream(text):
-                printer.print(chunk)
-            printer.finish()
-            print()
+            # 持锁期间定时任务不会打断流式输出，退出 with 后自动解锁
+            async with stream_lock:
+                print("claw> ", end="", flush=True)
+                printer = _ChunkPrinter()
+                async for chunk in claw.areply_stream(text):
+                    printer.print(chunk)
+                printer.finish()
+                print()
+
+            # 通知调度器有活动，重置空闲计时器
+            await claw.emit_event("session_activity", peer_key=claw._current_peer_key())
     finally:
+        if delivery_task is not None:
+            delivery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await delivery_task
         # 停止 MCP 连接
         await claw.stop()
 
 
+def _setup_logging(*, debug: bool, debug_only: str) -> None:
+    """配置日志：控制台按参数决定级别，文件统一写 DEBUG 到 logs/ 目录。"""
+    _LOG_DIR.mkdir(exist_ok=True)
+
+    file_handler = logging.FileHandler(
+        _LOG_DIR / "mini-claw.log", encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+    ))
+
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+
+    if debug_only:
+        console_level = logging.WARNING
+        logging.getLogger(debug_only).setLevel(logging.DEBUG)
+    elif debug:
+        console_level = logging.DEBUG
+    else:
+        console_level = logging.WARNING
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(name)s %(message)s",
+    ))
+    root_logger.addHandler(console_handler)
+    root_logger.setLevel(logging.DEBUG)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Mini Claw CLI chat")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG log output")
+    parser.add_argument(
+        "--debug-only",
+        type=str,
+        default="",
+        help="Only show DEBUG for specific logger (e.g. claw.scheduler)",
+    )
+    args = parser.parse_args()
+
+    _setup_logging(debug=args.debug, debug_only=args.debug_only)
+
     asyncio.run(run())
 
 

@@ -50,6 +50,8 @@ class SessionStore(Protocol):
 
     async def set_active(self, peer_key: str, session_id: str) -> None: ...
 
+    async def list_peer_keys(self) -> list[str]: ...
+
 
 class AgentRunner(Protocol):
     """Agent 运行器：接收会话和当前消息，返回回复。"""

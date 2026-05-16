@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -54,6 +55,7 @@ class MiniClaw:
         tools_registry: ToolsRegistry | None = None,
         mcp_config_path: str | None = None,
         memory_manager: Any | None = None,
+        schedule_config_path: str | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
@@ -93,6 +95,14 @@ class MiniClaw:
         self._mcp_manager: Any = None  # McpManager，延迟初始化
         self._tools_registry = tools_registry
         self._memory_manager = memory_manager
+        self._schedule_config_path = schedule_config_path
+        self._scheduler: Any = None  # TaskScheduler，延迟初始化
+        if self._tools_registry is not None and self._schedule_config_path:
+            from claw.builtin_tools.scheduler import register as register_scheduler_tool
+            register_scheduler_tool(
+                self._tools_registry,
+                self.create_scheduled_task,
+            )
 
     def _routing_message(self, text: str = "") -> InboundMessage:
         """构造一条 InboundMessage 用于获取路由字段（channel/account_id/peer_id）。"""
@@ -184,28 +194,61 @@ class MiniClaw:
     # --- MCP 生命周期管理 ---
 
     async def start(self) -> None:
-        """启动 MCP 连接并注册工具。无配置时为空操作。失败时清理并记录错误。"""
-        if not self._mcp_config_path:
-            return
-        try:
-            from claw.mcp.manager import McpManager
-            self._mcp_manager = McpManager.from_config_file(self._mcp_config_path)
-            await self._mcp_manager.start()
-            # 如果有工具注册表，桥接 MCP 工具
-            if self._tools_registry is not None:
-                self._mcp_manager.register_tools(self._tools_registry)
-        except Exception as exc:
-            # 启动失败时清理资源
-            if self._mcp_manager is not None:
-                try:
-                    await self._mcp_manager.stop()
-                except Exception:
-                    pass
-                self._mcp_manager = None
-            logger.error("Failed to start MCP manager: %s", exc)
+        """启动 MCP 连接和定时任务调度器。无配置时为空操作。"""
+        # MCP 启动
+        if self._mcp_config_path:
+            try:
+                from claw.mcp.manager import McpManager
+                self._mcp_manager = McpManager.from_config_file(self._mcp_config_path)
+                await self._mcp_manager.start()
+                if self._tools_registry is not None:
+                    self._mcp_manager.register_tools(self._tools_registry)
+            except Exception as exc:
+                if self._mcp_manager is not None:
+                    try:
+                        await self._mcp_manager.stop()
+                    except Exception:
+                        pass
+                    self._mcp_manager = None
+                logger.error("Failed to start MCP manager: %s", exc)
+
+        # 定时任务调度器启动
+        if self._schedule_config_path:
+            try:
+                from claw.scheduler import TaskScheduler
+                from claw.scheduler.config import ScheduleConfigLoader
+                from claw.scheduler.context import TaskContext
+                from claw.scheduler.history import TaskRunHistory
+
+                context = TaskContext(
+                    _session_store=self._session_store,
+                    _memory_manager=self._memory_manager,
+                    _gateway=self.gateway,
+                )
+                history = TaskRunHistory()
+                self._scheduler = TaskScheduler(
+                    gateway=self.gateway,
+                    context=context,
+                    history=history,
+                )
+                definitions = ScheduleConfigLoader.load(self._schedule_config_path)
+                for defn in definitions:
+                    self._scheduler.register(defn)
+                await self._scheduler.start()
+            except Exception as exc:
+                if self._scheduler is not None:
+                    try:
+                        await self._scheduler.stop()
+                    except Exception:
+                        pass
+                    self._scheduler = None
+                logger.error("Failed to start scheduler: %s", exc)
 
     async def stop(self) -> None:
-        """停止 MCP 连接，释放资源。"""
+        """停止 MCP 连接和定时任务调度器。"""
+        if self._scheduler is not None:
+            await self._scheduler.stop()
+            self._scheduler = None
         if self._mcp_manager is not None:
             await self._mcp_manager.stop()
             self._mcp_manager = None
@@ -215,6 +258,80 @@ class MiniClaw:
         if self._mcp_manager is None:
             return []
         return self._mcp_manager.get_status()
+
+    # --- 调度器便捷方法 ---
+
+    def get_task_status(self) -> list[dict[str, Any]]:
+        """返回所有定时任务状态列表。"""
+        if self._scheduler is None:
+            return []
+        return self._scheduler.list_tasks()
+
+    async def run_task(self, name: str) -> Any:
+        """手动触发指定定时任务。"""
+        if self._scheduler is None:
+            return None
+        return await self._scheduler.run_now(name)
+
+    async def create_scheduled_task(self, args: dict[str, Any]) -> str:
+        """Create a scheduled LLM task from tool-call arguments."""
+        if not self._schedule_config_path:
+            return "Error: scheduler is not configured."
+
+        from claw.scheduler.config import (
+            ScheduleConfigLoader,
+            upsert_task_config,
+        )
+        from claw.scheduler.types import TaskDefinition
+
+        name = self._normalize_task_name(str(args.get("name") or "scheduled_task"))
+        trigger_data = args.get("trigger")
+        if not isinstance(trigger_data, dict):
+            return "Error: trigger must be an object."
+        trigger = ScheduleConfigLoader._parse_trigger(trigger_data)
+        if trigger is None:
+            return "Error: invalid trigger."
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return "Error: prompt is required."
+        if name in {"daily_distill", "periodic_memory", "idle_compact"}:
+            return f"Error: task name '{name}' is reserved."
+
+        replace = bool(args.get("replace", False))
+        existing_names = {s["name"] for s in self.get_task_status()}
+        if self._scheduler is not None and name in existing_names and not replace:
+            return f"Error: task '{name}' already exists. Set replace=true to update it."
+
+        definition = TaskDefinition(
+            name=name,
+            trigger=trigger,
+            handler=None,
+            enabled=bool(args.get("enabled", True)),
+            description=str(args.get("description") or prompt[:80]),
+            params={},
+            peer_key=self._current_peer_key(),
+            prompt=prompt,
+        )
+        upsert_task_config(self._schedule_config_path, definition)
+        if self._scheduler is not None:
+            await self._scheduler.upsert(definition)
+        return f"Scheduled task '{name}' created."
+
+    async def emit_event(self, event_name: str, **payload: Any) -> None:
+        """发射命名事件到调度器（如 session_activity）。"""
+        if self._scheduler is not None:
+            await self._scheduler.emit(event_name, **payload)
+
+    def _current_peer_key(self) -> str:
+        """获取当前 peer 的 peer_key。"""
+        msg = self._routing_message()
+        return f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
+
+    def _normalize_task_name(self, name: str) -> str:
+        """Normalize an LLM-provided task name for config keys."""
+        value = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip().lower())
+        value = re.sub(r"_+", "_", value).strip("_-")
+        return value[:64] or "scheduled_task"
 
 
 def _default_delivery() -> Delivery:

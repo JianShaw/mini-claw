@@ -104,7 +104,7 @@ class McpServerConnection:
             if self._background_task is not None:
                 try:
                     await self._background_task
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     pass
 
     async def _run(self) -> None:

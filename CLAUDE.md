@@ -71,6 +71,7 @@ When triggered, the LLM generates a summary of the conversation history. The sum
 - 业务代码要有清晰的注释
 - 业务代码编写完成后，全量执行测试用例
 - 代码闭环流程：实现完成后自动调用 codex:adversarial-review 进行代码审查，根据审查结果修复问题，修复后再次 codex:adversarial-review 确认，直到审查通过形成闭环
+- 设计实现方案时，对于接口，模块，功能间要有明确的边界。
 
 
 ### Module Responsibilities

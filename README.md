@@ -16,6 +16,21 @@ You can also run the module directly:
 uv run python -m chat.app
 ```
 
+### Debug & Logging
+
+All log levels are written to `logs/mini-claw.log` automatically. Use flags to control console output:
+
+```powershell
+# Normal: console quiet, logs go to file only
+uv run mini-claw-chat
+
+# Show all DEBUG logs on console too
+uv run mini-claw-chat --debug
+
+# Only show scheduler logs on console
+uv run mini-claw-chat --debug-only claw.scheduler
+```
+
 Then type messages in the terminal:
 
 ```text
@@ -41,6 +56,8 @@ The chat app supports managing multiple independent conversations:
 | `/memory long` | View long-term memory |
 | `/memory update` | Force update today's daily memory from current session |
 | `/memory distill` | Extract long-term candidates from daily memory into MEMORY.md |
+| `/tasks` | List all scheduled tasks and their last execution result |
+| `/task run <name>` | Manually trigger a scheduled task |
 | `/help` | Show available commands |
 
 ### Memory System

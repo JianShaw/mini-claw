@@ -8,6 +8,7 @@ JsonlDelivery  —— 将聊天记录按会话持久化到 JSONL 文件
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from itertools import count
@@ -78,9 +79,14 @@ class LocalDelivery:
     """本地投递：将 (消息, 回复) 记录到 sent 列表，不调用任何外部 API。"""
 
     sent: list[tuple[InboundMessage, AgentReply]] = field(default_factory=list)
+    events: asyncio.Queue[tuple[InboundMessage, AgentReply]] = field(
+        default_factory=asyncio.Queue
+    )
 
     async def send(self, message: InboundMessage, reply: AgentReply) -> None:
-        self.sent.append((message, reply))
+        item = (message, reply)
+        self.sent.append(item)
+        self.events.put_nowait(item)
 
 
 class JsonlDelivery:

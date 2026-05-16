@@ -165,6 +165,34 @@ async def test_mini_claw_with_tools_registry() -> None:
     assert reply.text == "echo: hello"
 
 
+async def test_mini_claw_registers_scheduled_task_tool(tmp_path) -> None:
+    registry = ToolsRegistry()
+    delivery = LocalDelivery()
+    config = tmp_path / "schedule.json"
+    claw = MiniClaw(
+        delivery=delivery,
+        agent_runner=EchoAgentRunner(),
+        session_store=InMemorySessionStore(),
+        tools_registry=registry,
+        schedule_config_path=str(config),
+    )
+    await claw.start()
+    try:
+        assert registry.get("create_scheduled_task") is not None
+        result = await registry.execute("create_scheduled_task", {
+            "name": "Morning Reminder",
+            "trigger": {"type": "interval", "seconds": 3600},
+            "prompt": "Tell me to stand up.",
+            "description": "standup reminder",
+        })
+        assert "morning_reminder" in result
+        statuses = claw.get_task_status()
+        assert any(s["name"] == "morning_reminder" for s in statuses)
+        assert "morning_reminder" in config.read_text(encoding="utf-8")
+    finally:
+        await claw.stop()
+
+
 # --- MCP 集成测试 ---
 
 

@@ -1,0 +1,98 @@
+{
+  "tasks": {
+    "daily_distill": {
+      "trigger": {
+        "type": "cron",
+        "expression": "0 3 * * *"
+      },
+      "handler": "claw.scheduler.tasks.daily_memory_distill",
+      "enabled": true,
+      "description": "凌晨3点蒸馏长期记忆"
+    },
+    "periodic_memory": {
+      "trigger": {
+        "type": "interval",
+        "seconds": 1800
+      },
+      "handler": "claw.scheduler.tasks.periodic_memory_update",
+      "enabled": true,
+      "description": "每30分钟更新所有活跃session的daily memory"
+    },
+    "idle_compact": {
+      "trigger": {
+        "type": "event",
+        "event_name": "session_activity",
+        "idle_timeout_seconds": 600
+      },
+      "handler": "claw.scheduler.tasks.idle_auto_compact",
+      "enabled": true,
+      "description": "空闲10分钟自动compact"
+    },
+    "drink_water_reminder": {
+      "trigger": {
+        "type": "interval",
+        "seconds": 20
+      },
+      "peer_key": "local:local-app:local-user",
+      "prompt": "提醒用户：该喝水了！起来活动一下，喝口水",
+      "enabled": false,
+      "description": "每20秒提醒用户喝水"
+    },
+    "drink_water_reminder_1min": {
+      "trigger": {
+        "type": "interval",
+        "seconds": 60
+      },
+      "peer_key": "local:local-app:local-user",
+      "prompt": "现在是喝水时间！已经过去1分钟了，请喝一口水，保持身体水分充足",
+      "enabled": false,
+      "description": "每隔1分钟提醒用户喝水（已禁用）"
+    },
+    "drink_water_30min": {
+      "trigger": {
+        "type": "interval",
+        "seconds": 1800
+      },
+      "peer_key": "local:local-app:local-user",
+      "prompt": "提醒用户：该喝水了！起来活动一下，喝口水",
+      "enabled": false,
+      "description": "每30分钟提醒用户喝水"
+    },
+    "sleep_reminder": {
+      "trigger": {
+        "type": "cron",
+        "expression": "7 21 * * *"
+      },
+      "handler": null,
+      "enabled": true,
+      "description": "每天晚上21:07提醒用户去睡觉",
+      "params": {},
+      "peer_key": "local:local-app:local-user",
+      "prompt": "现在是晚上21:07，到了该睡觉的时间啦！请提醒用户：🌙 该睡觉了，早点休息，晚安！"
+    },
+    "sleep_reminder_2110": {
+      "trigger": {
+        "type": "cron",
+        "expression": "10 21 * * *"
+      },
+      "handler": null,
+      "enabled": true,
+      "description": "每天21:10提醒用户去睡觉",
+      "params": {},
+      "peer_key": "local:local-app:local-user",
+      "prompt": "现在是晚上21:10，到了该睡觉的时间啦！请提醒用户：🌙 该睡觉了，早点休息，晚安！"
+    },
+    "sleep_reminder_2min": {
+      "trigger": {
+        "type": "cron",
+        "expression": "22 21 * * *"
+      },
+      "handler": null,
+      "enabled": true,
+      "description": "2分钟后提醒用户睡觉（21:22）",
+      "params": {},
+      "peer_key": "local:local-app:local-user",
+      "prompt": "现在是晚上21:22，2分钟到了！请提醒用户：🌙 该睡觉了，快去休息吧，晚安！"
+    }
+  }
+}

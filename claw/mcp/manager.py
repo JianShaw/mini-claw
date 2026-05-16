@@ -61,7 +61,7 @@ class McpManager:
             self._connections[config.name] = connection
             try:
                 await connection.connect()
-            except Exception as exc:
+            except BaseException as exc:
                 logger.warning(
                     "MCP server '%s' failed to start: %s", config.name, exc
                 )

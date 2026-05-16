@@ -118,6 +118,26 @@ async def test_local_delivery_records_sent_reply() -> None:
     assert delivery.sent[0] == (msg, reply)
 
 
+async def test_local_delivery_queues_sent_reply() -> None:
+    """LocalDelivery.send() 应同时发布投递事件，供 CLI 监听后台消息。"""
+    delivery = LocalDelivery()
+    msg = InboundMessage(
+        channel="local",
+        account_id="app",
+        peer_id="user",
+        sender_id="scheduler",
+        message_id="1",
+        text="hi",
+        timestamp=0,
+        message_type="text",
+        raw=None,
+        metadata={"scheduled": True},
+    )
+    reply = AgentReply(text="ok")
+    await delivery.send(msg, reply)
+    assert await delivery.events.get() == (msg, reply)
+
+
 # --- JsonlDelivery ---
 
 

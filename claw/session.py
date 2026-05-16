@@ -88,6 +88,10 @@ class InMemorySessionStore:
         """设置 peer 的活跃 session。"""
         self._active[peer_key] = session_id
 
+    async def list_peer_keys(self) -> list[str]:
+        """返回所有有活跃 session 的 peer_key 列表。"""
+        return list(self._active.keys())
+
 
 class JsonlSessionStore:
     """JSONL 文件持久化会话存储。
@@ -313,3 +317,8 @@ class JsonlSessionStore:
         entry = self._peer_entry(peer_key)
         entry["active"] = session_id
         self._flush_index()
+
+    async def list_peer_keys(self) -> list[str]:
+        """返回所有有活跃 session 的 peer_key 列表。"""
+        index = self._ensure_index()
+        return [k for k, v in index.items() if v.get("active")]

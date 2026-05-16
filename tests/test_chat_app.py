@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
-from chat.app import run
+from chat.app import _print_scheduled_deliveries, run
 from claw.agent import MiniClaw
 from claw.channels.local import LocalDelivery
 from claw.runner import EchoAgentRunner
 from claw.session import InMemorySessionStore
-from claw.types import StreamChunk
+from claw.types import AgentReply, InboundMessage, StreamChunk
 
 
 def _echo_claw() -> MiniClaw:
@@ -70,6 +71,47 @@ def test_chat_app_prints_thinking_with_prefix(monkeypatch, capsys) -> None:
     assert captured.out.count("[think]") == 1
     assert "hmm" in captured.out
     assert "answer" in captured.out
+
+
+async def test_chat_app_prints_scheduled_delivery_from_queue(capsys) -> None:
+    """后台 scheduler 投递到 LocalDelivery 后，CLI 应主动打印出来。"""
+    delivery = LocalDelivery()
+    task = asyncio.create_task(_print_scheduled_deliveries(delivery, asyncio.Lock()))
+    try:
+        normal_msg = InboundMessage(
+            channel="local",
+            account_id="app",
+            peer_id="user",
+            sender_id="user",
+            message_id="normal",
+            text="normal",
+            timestamp=0,
+            message_type="text",
+            raw=None,
+        )
+        scheduled_msg = InboundMessage(
+            channel="local",
+            account_id="app",
+            peer_id="user",
+            sender_id="scheduler",
+            message_id="scheduled",
+            text="remind",
+            timestamp=0,
+            message_type="text",
+            raw=None,
+            metadata={"scheduled": True, "task_name": "sleep"},
+        )
+        await delivery.send(normal_msg, AgentReply(text="normal reply"))
+        await delivery.send(scheduled_msg, AgentReply(text="sleep now"))
+        await asyncio.sleep(0.05)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    captured = capsys.readouterr()
+    assert "claw[sleep]>" in captured.out
+    assert "sleep now" in captured.out
+    assert "normal reply" not in captured.out
 
 
 # --- 会话管理命令测试 ---

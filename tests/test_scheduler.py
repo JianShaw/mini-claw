@@ -1,0 +1,404 @@
+"""调度器核心测试：注册/启停、interval、event、手动触发、LLM 任务、错误隔离。"""
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+from unittest.mock import AsyncMock
+
+from claw.scheduler import (
+    EventTrigger,
+    IntervalTrigger,
+    TaskContext,
+    TaskDefinition,
+    TaskResult,
+    TaskRunHistory,
+    TaskScheduler,
+)
+from claw.types import AgentReply
+
+
+def _mock_context() -> TaskContext:
+    """构造一个不依赖真实 store 的 TaskContext。"""
+    store = AsyncMock()
+    store.list_peer_keys = AsyncMock(return_value=[])
+    store.get_active = AsyncMock(return_value=None)
+    return TaskContext(
+        _session_store=store,
+        _memory_manager=None,
+        _gateway=None,
+    )
+
+
+def _mock_gateway() -> AsyncMock:
+    """构造一个 mock gateway，handle_inbound_message 返回 AgentReply。"""
+    gw = AsyncMock()
+    gw.handle_inbound_message = AsyncMock(return_value=AgentReply(text="ok"))
+    return gw
+
+
+def _mock_scheduler(**kwargs: Any) -> tuple[TaskScheduler, AsyncMock, TaskContext]:
+    """构造 scheduler + mock gateway + mock context。"""
+    gw = _mock_gateway()
+    ctx = _mock_context()
+    history = kwargs.pop("history", None) or TaskRunHistory()
+    scheduler = TaskScheduler(gateway=gw, context=ctx, history=history, **kwargs)
+    return scheduler, gw, ctx
+
+
+async def _counting_handler(ctx: TaskContext, **params: Any) -> TaskResult:
+    """记录调用次数的 handler。"""
+    calls = ctx._event_payloads.setdefault("_test_calls", [])
+    calls.append(params.get("label", "default"))
+    return TaskResult(task_name="test", success=True, message=f"call {len(calls)}")
+
+
+async def _failing_handler(ctx: TaskContext, **params: Any) -> TaskResult:
+    """总是失败的 handler。"""
+    raise RuntimeError("intentional failure")
+
+
+# --- 注册和启停 ---
+
+
+async def test_register_creates_event_for_event_trigger() -> None:
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="evt",
+        trigger=EventTrigger(event_name="test_event"),
+        handler=_counting_handler,
+    ))
+    assert "test_event" in scheduler._events
+
+
+async def test_register_rejects_duplicate() -> None:
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="dup", trigger=IntervalTrigger(seconds=60), handler=_counting_handler,
+    ))
+    try:
+        scheduler.register(TaskDefinition(
+            name="dup", trigger=IntervalTrigger(seconds=60), handler=_counting_handler,
+        ))
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+
+async def test_start_stop_lifecycle() -> None:
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="long", trigger=IntervalTrigger(seconds=3600), handler=_counting_handler,
+    ))
+    await scheduler.start()
+    assert scheduler._running
+    assert "long" in scheduler._asyncio_tasks
+    await scheduler.stop()
+    assert not scheduler._running
+    assert len(scheduler._asyncio_tasks) == 0
+
+
+async def test_start_skips_disabled_tasks() -> None:
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="off", trigger=IntervalTrigger(seconds=3600), handler=_counting_handler,
+        enabled=False,
+    ))
+    await scheduler.start()
+    assert "off" not in scheduler._asyncio_tasks
+    await scheduler.stop()
+
+
+# --- Interval 触发 ---
+
+
+async def test_interval_task_executes_repeatedly() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="tick", trigger=IntervalTrigger(seconds=1), handler=_counting_handler,
+    ))
+    await scheduler.start()
+    await asyncio.sleep(2.5)
+    await scheduler.stop()
+    calls = ctx._event_payloads.get("_test_calls", [])
+    assert len(calls) >= 2, f"Expected >= 2 calls, got {len(calls)}"
+
+
+# --- Event 触发 ---
+
+
+async def test_event_task_fires_on_emit() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    # 无 idle timeout，仅响应 emit
+    scheduler.register(TaskDefinition(
+        name="evt", trigger=EventTrigger(event_name="test_event"), handler=_counting_handler,
+    ))
+    await scheduler.start()
+    await asyncio.sleep(0.05)
+    await scheduler.emit("test_event")
+    await asyncio.sleep(0.1)
+    await scheduler.stop()
+    calls = ctx._event_payloads.get("_test_calls", [])
+    assert len(calls) >= 1
+
+
+async def test_event_idle_timeout_fires_when_no_activity() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="idle",
+        trigger=EventTrigger(event_name="activity", idle_timeout_seconds=0.2),
+        handler=_counting_handler,
+    ))
+    await scheduler.start()
+    await asyncio.sleep(0.5)
+    await scheduler.stop()
+    calls = ctx._event_payloads.get("_test_calls", [])
+    assert len(calls) >= 1, "Should have fired after idle timeout"
+
+
+async def test_event_activity_resets_idle_timer() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="idle",
+        trigger=EventTrigger(event_name="activity", idle_timeout_seconds=0.2),
+        handler=_counting_handler,
+    ))
+    await scheduler.start()
+    # 在 timeout 之前 emit，重置计时器
+    await asyncio.sleep(0.1)
+    await scheduler.emit("activity", peer_key="test")
+    await asyncio.sleep(0.1)
+    await scheduler.emit("activity", peer_key="test")
+    await asyncio.sleep(0.1)
+    # 还没到 timeout，不应触发
+    calls_before = len(ctx._event_payloads.get("_test_calls", []))
+    # 等到 timeout
+    await asyncio.sleep(0.3)
+    await scheduler.stop()
+    calls_after = len(ctx._event_payloads.get("_test_calls", []))
+    assert calls_after >= 1
+    assert calls_before == 0
+
+
+# --- 手动触发 ---
+
+
+async def test_run_now_executes_handler() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="manual", trigger=IntervalTrigger(seconds=3600), handler=_counting_handler,
+    ))
+    result = await scheduler.run_now("manual")
+    assert result.success
+    assert "call" in result.message
+
+
+async def test_run_now_unknown_task() -> None:
+    scheduler, _, _ = _mock_scheduler()
+    result = await scheduler.run_now("nonexistent")
+    assert not result.success
+    assert "not found" in result.error
+
+
+async def test_run_now_passes_params() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="params",
+        trigger=IntervalTrigger(seconds=3600),
+        handler=_counting_handler,
+        params={"label": "custom"},
+    ))
+    await scheduler.run_now("params")
+    calls = ctx._event_payloads.get("_test_calls", [])
+    assert calls[-1] == "custom"
+
+
+async def test_upsert_replaces_running_task() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="dynamic",
+        trigger=IntervalTrigger(seconds=3600),
+        handler=_counting_handler,
+        params={"label": "old"},
+    ))
+    await scheduler.start()
+    await scheduler.upsert(TaskDefinition(
+        name="dynamic",
+        trigger=IntervalTrigger(seconds=3600),
+        handler=_counting_handler,
+        params={"label": "new"},
+    ))
+    result = await scheduler.run_now("dynamic")
+    await scheduler.stop()
+    assert result.success
+    calls = ctx._event_payloads.get("_test_calls", [])
+    assert calls[-1] == "new"
+
+
+# --- 错误隔离 ---
+
+
+async def test_handler_failure_does_not_crash_scheduler() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="bad", trigger=IntervalTrigger(seconds=3600), handler=_failing_handler,
+    ))
+    scheduler.register(TaskDefinition(
+        name="good", trigger=IntervalTrigger(seconds=3600), handler=_counting_handler,
+    ))
+    result_bad = await scheduler.run_now("bad")
+    assert not result_bad.success
+    result_good = await scheduler.run_now("good")
+    assert result_good.success
+
+
+# --- list_tasks ---
+
+
+async def test_list_tasks_returns_status() -> None:
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="t1", trigger=IntervalTrigger(seconds=60), handler=_counting_handler,
+        description="test task",
+    ))
+    statuses = scheduler.list_tasks()
+    assert len(statuses) == 1
+    assert statuses[0]["name"] == "t1"
+    assert statuses[0]["trigger_type"] == "IntervalTrigger"
+    assert statuses[0]["description"] == "test task"
+    assert statuses[0]["task_type"] == "system"
+
+
+# --- emit payload ---
+
+
+async def test_emit_stores_payload_in_context() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    await scheduler.emit("test_event", peer_key="local:app:user")
+    assert ctx.last_event_payload("test_event", key="peer_key") == "local:app:user"
+
+
+async def test_emit_retains_last_10_payloads() -> None:
+    scheduler, _, ctx = _mock_scheduler()
+    for i in range(15):
+        await scheduler.emit("test_event", count=i)
+    payloads = ctx._event_payloads.get("test_event", [])
+    assert len(payloads) == 10
+    assert payloads[-1]["count"] == 14
+
+
+# --- LLM 任务模式 ---
+
+
+async def test_llm_task_sends_inbound_message() -> None:
+    """LLM 任务触发时构建 InboundMessage 并走 gateway。"""
+    scheduler, gw, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="remind",
+        trigger=IntervalTrigger(seconds=3600),
+        peer_key="local:app:user",
+        prompt="提醒喝水",
+    ))
+    result = await scheduler.run_now("remind")
+    assert result.success
+    gw.handle_inbound_message.assert_awaited_once()
+    msg = gw.handle_inbound_message.await_args.args[0]
+    assert msg.text == "提醒喝水"
+    assert msg.sender_id == "scheduler"
+    assert msg.metadata["scheduled"] is True
+    assert msg.metadata["task_name"] == "remind"
+    assert msg.channel == "local"
+    assert msg.account_id == "app"
+    assert msg.peer_id == "user"
+
+
+async def test_llm_task_no_handler_stored() -> None:
+    """LLM 任务注册后 _handlers[name] 为 None。"""
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="remind",
+        trigger=IntervalTrigger(seconds=3600),
+        peer_key="local:app:user",
+        prompt="提醒喝水",
+    ))
+    assert scheduler._handlers["remind"] is None
+
+
+async def test_llm_task_list_tasks_shows_llm_type() -> None:
+    """list_tasks 正确显示 LLM 任务类型。"""
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="remind",
+        trigger=IntervalTrigger(seconds=60),
+        peer_key="local:app:user",
+        prompt="提醒",
+    ))
+    statuses = scheduler.list_tasks()
+    assert len(statuses) == 1
+    assert statuses[0]["task_type"] == "llm"
+
+
+async def test_llm_task_gateway_failure() -> None:
+    """gateway 抛异常时 LLM 任务返回失败。"""
+    scheduler, gw, _ = _mock_scheduler()
+    gw.handle_inbound_message = AsyncMock(side_effect=RuntimeError("timeout"))
+    scheduler.register(TaskDefinition(
+        name="remind",
+        trigger=IntervalTrigger(seconds=3600),
+        peer_key="local:app:user",
+        prompt="提醒喝水",
+    ))
+    result = await scheduler.run_now("remind")
+    assert not result.success
+    assert "timeout" in result.error
+
+
+async def test_llm_task_incomplete_without_both_fields() -> None:
+    """只有 peer_key 没有 prompt 时不被视为 LLM 任务，走 system 路径报错。"""
+    scheduler, _, _ = _mock_scheduler()
+    scheduler.register(TaskDefinition(
+        name="bad",
+        trigger=IntervalTrigger(seconds=3600),
+        peer_key="local:app:user",
+        prompt=None,
+    ))
+    result = await scheduler.run_now("bad")
+    assert not result.success
+    assert "No handler" in result.error
+
+
+# --- Run History ---
+
+
+async def test_system_task_records_history(tmp_path: Any) -> None:
+    """系统任务执行后记录到 run history。"""
+    history = TaskRunHistory(path=tmp_path / "history.jsonl")
+    scheduler, _, _ = _mock_scheduler(history=history)
+    scheduler.register(TaskDefinition(
+        name="sys_task",
+        trigger=IntervalTrigger(seconds=3600),
+        handler=_counting_handler,
+    ))
+    await scheduler.run_now("sys_task")
+    records = history.list_recent()
+    assert len(records) == 1
+    assert records[0].task_name == "sys_task"
+    assert records[0].task_type == "system"
+    assert records[0].success is True
+
+
+async def test_llm_task_records_history(tmp_path: Any) -> None:
+    """LLM 任务执行后记录到 run history。"""
+    history = TaskRunHistory(path=tmp_path / "history.jsonl")
+    scheduler, gw, _ = _mock_scheduler(history=history)
+    scheduler.register(TaskDefinition(
+        name="remind",
+        trigger=IntervalTrigger(seconds=3600),
+        peer_key="local:app:user",
+        prompt="提醒",
+    ))
+    await scheduler.run_now("remind")
+    records = history.list_recent()
+    assert len(records) == 1
+    assert records[0].task_name == "remind"
+    assert records[0].task_type == "llm"
+    assert records[0].success is True
