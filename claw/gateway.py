@@ -185,8 +185,10 @@ class RuntimeGateway:
         """
         peer_key = self._peer_key(message)
         session = await self._session_store.get_active(peer_key)
-        if session is None or not session.history:
+        if session is None:
             return None
+        if not session.history:
+            return ""
         await self._maybe_update_daily_memory(session, force=True)
 
         # 有 compressor：使用 force=True，保留最近 N 轮
@@ -196,7 +198,8 @@ class RuntimeGateway:
                 await self._session_store.save(session)
                 await self._distill_memory()
                 return summary
-            return None
+            # 消息轮数不足 keep_rounds，无法压缩
+            return ""
 
         # Fallback：全量压缩（兼容无 compressor 的测试 runner）
         summary = await self._full_compact(session)

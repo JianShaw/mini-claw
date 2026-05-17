@@ -116,7 +116,9 @@ async def _handle_command(text: str, claw: MiniClaw) -> bool:
     if text == "/compact":
         summary = await claw.compact_session()
         if summary is None:
-            print("No active session or empty history.")
+            print("No active session.")
+        elif summary == "":
+            print("Not enough messages to compact yet.")
         else:
             print(f"Compacted. Summary:\n  {summary}")
         return True

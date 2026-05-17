@@ -8,13 +8,24 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from claw.memory.embedding import EmbeddingProvider, FastEmbedProvider
+from claw.memory.search import HybridMemorySearch, MemoryChunk, build_memory_chunks
 from claw.memory.store import DailyMemoryStore, LongTermMemoryStore
+from claw.memory.vector_index import (
+    MemorySource,
+    MemoryVectorIndexError,
+    SQLiteMemoryVectorIndex,
+)
 from claw.types import ChatMessage, InboundMessage, Session
+
+logger = logging.getLogger(__name__)
 
 _DAILY_SECTIONS = [
     "Current Context",
@@ -25,6 +36,12 @@ _DAILY_SECTIONS = [
     "Tool Results",
     "Long-Term Candidates",
 ]
+
+_NOISY_DAILY_TITLES = {"Recent User Intent", "Tool Results"}
+_NOISY_DAILY_PREFIXES = (
+    "Recent user topic:",
+    "Recent assistant response:",
+)
 
 
 @dataclass(slots=True)
@@ -44,12 +61,28 @@ class MemoryManager:
         *,
         update_every: int = 3,
         max_context_chars: int = 8000,
+        memory_top_k: int = 8,
+        embedding_provider: EmbeddingProvider | None = None,
+        vector_index: SQLiteMemoryVectorIndex | None = None,
+        use_vector_index: bool | None = None,
         today_provider: Callable[[], date] | None = None,
     ) -> None:
         self.daily_store = DailyMemoryStore(root)
         self.long_store = LongTermMemoryStore(root)
         self.update_every = update_every
         self.max_context_chars = max_context_chars
+        self.memory_top_k = memory_top_k
+        self.searcher = HybridMemorySearch()
+        self._use_vector_index = (
+            use_vector_index
+            if use_vector_index is not None
+            else os.environ.get("MEMORY_BACKEND", "sqlite").lower() == "sqlite"
+        )
+        self._vector_warning_logged = False
+        self.vector_index = vector_index
+        if self._use_vector_index and self.vector_index is None:
+            provider = embedding_provider or FastEmbedProvider()
+            self.vector_index = SQLiteMemoryVectorIndex(root, provider)
         self._today_provider = today_provider or date.today
 
     def today(self) -> date:
@@ -67,17 +100,142 @@ class MemoryManager:
         if not long_memory and not daily_memory:
             return ""
 
+        query = message.text if message is not None else ""
+        if self._use_vector_index and self.vector_index is not None:
+            selected = self._search_vector_memory(query, long_memory, daily_memory)
+            if selected is not None:
+                return self._render_context(selected)
+
+        selected = self._search_hybrid_memory(query, long_memory, daily_memory)
+        return self._render_context(selected)
+
+    def _search_vector_memory(
+        self,
+        query: str,
+        long_memory: str,
+        daily_memory: str,
+    ) -> list[MemoryChunk] | None:
+        """Search the derived SQLite vector index; return None on fallback."""
+        if self.vector_index is None:
+            return None
+        sources: list[MemorySource] = []
+        if long_memory:
+            sources.append(MemorySource(
+                path=self.long_store.path,
+                source="Long-Term Memory",
+                markdown=long_memory,
+            ))
+        if daily_memory:
+            sources.append(MemorySource(
+                path=self.daily_store.path_for(self.today()),
+                source="Today's Daily Memory",
+                markdown=daily_memory,
+            ))
+        try:
+            results = self.vector_index.search(
+                query,
+                sources,
+                top_k=max(self.memory_top_k * 3, self.memory_top_k),
+            )
+        except MemoryVectorIndexError as exc:
+            if not self._vector_warning_logged:
+                logger.warning(
+                    "memory vector search unavailable; falling back to hybrid search: %s",
+                    exc,
+                )
+                self._vector_warning_logged = True
+            return None
+
+        filtered = _filter_retrieval_chunks(
+            [result.chunk for result in results],
+            query,
+        )
+        selected = filtered[:self.memory_top_k]
+        logger.debug(
+            "memory vector retrieval query=%r results=%d filtered=%d top_k=%d",
+            query,
+            len(results),
+            len(filtered),
+            self.memory_top_k,
+        )
+        for idx, result in enumerate(results[: self.memory_top_k], start=1):
+            logger.debug(
+                "memory vector result #%d source=%s title=%s score=%.3f text=%r",
+                idx,
+                result.chunk.source,
+                result.chunk.title,
+                result.score,
+                result.chunk.text[:120],
+            )
+        return selected
+
+    def _search_hybrid_memory(
+        self,
+        query: str,
+        long_memory: str,
+        daily_memory: str,
+    ) -> list[MemoryChunk]:
+        raw_chunks = build_memory_chunks(long_memory, daily_memory)
+        chunks = _filter_retrieval_chunks(raw_chunks, query)
+        results = self.searcher.search(query, chunks, top_k=self.memory_top_k)
+        logger.debug(
+            "memory retrieval query=%r chunks=%d filtered=%d top_k=%d results=%d",
+            query,
+            len(raw_chunks),
+            len(chunks),
+            self.memory_top_k,
+            len(results),
+        )
+        for idx, result in enumerate(results, start=1):
+            logger.debug(
+                (
+                    "memory result #%d source=%s title=%s score=%.3f "
+                    "semantic=%.3f bm25=%.3f text=%r"
+                ),
+                idx,
+                result.chunk.source,
+                result.chunk.title,
+                result.score,
+                result.semantic_score,
+                result.bm25_score,
+                result.chunk.text[:120],
+            )
+        return [result.chunk for result in results]
+
+    def _render_context(self, selected: list[MemoryChunk]) -> str:
+        long_items = [
+            chunk.text
+            for chunk in selected
+            if chunk.source == "Long-Term Memory"
+        ]
+        daily_items = [
+            chunk.text
+            for chunk in selected
+            if chunk.source == "Today's Daily Memory"
+        ]
+
+        long_context = "\n".join(f"- {item}" for item in _unique(long_items))
+        daily_context = "\n".join(f"- {item}" for item in _unique(daily_items))
+
         context = (
             "[Memory Context]\n\n"
             "Use this memory only as background context.\n"
             "The current user message and current session history have higher priority.\n"
             "If memory is outdated or conflicts with current instructions, follow the current conversation.\n\n"
+            "[Retrieval]\n"
+            "Memory search uses SQLite vector retrieval when available, with hybrid lexical fallback.\n\n"
             "[Long-Term Memory]\n"
-            f"{long_memory or '(empty)'}\n\n"
+            f"{long_context or '(empty)'}\n\n"
             "[Today's Daily Memory]\n"
-            f"{daily_memory or '(empty)'}"
+            f"{daily_context or '(empty)'}"
         )
-        return _clip(context, self.max_context_chars)
+        clipped = _clip(context, self.max_context_chars)
+        logger.debug(
+            "memory context rendered chars=%d clipped_chars=%d",
+            len(context),
+            len(clipped),
+        )
+        return clipped
 
     async def maybe_update_daily(self, session: Session, *, force: bool = False) -> bool:
         """按策略更新当天 daily memory。
@@ -198,6 +356,27 @@ class MemoryManager:
 def _one_line(text: str, limit: int = 180) -> str:
     """把多行内容压成单行，避免 daily memory 被长消息撑爆。"""
     return _clip(" ".join(text.split()), limit)
+
+
+def _filter_retrieval_chunks(chunks: list[MemoryChunk], query: str) -> list[MemoryChunk]:
+    """Drop daily-memory echoes that duplicate current/session context."""
+    normalized_query = _normalize_retrieval_text(query)
+    filtered: list[MemoryChunk] = []
+    for chunk in chunks:
+        if chunk.source == "Today's Daily Memory":
+            text = chunk.text.strip()
+            if chunk.title in _NOISY_DAILY_TITLES:
+                continue
+            if any(text.startswith(prefix) for prefix in _NOISY_DAILY_PREFIXES):
+                continue
+            if normalized_query and _normalize_retrieval_text(text) == normalized_query:
+                continue
+        filtered.append(chunk)
+    return filtered
+
+
+def _normalize_retrieval_text(text: str) -> str:
+    return " ".join(text.split()).strip().rstrip("?!?!.。？")
 
 
 def _clip(text: str, limit: int) -> str:

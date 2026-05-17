@@ -131,7 +131,7 @@ async def test_gateway_injects_memory_context_before_runner(tmp_path) -> None:
         memory_manager=manager,
     )
 
-    await gateway.handle_inbound_message(_msg("hello"))
+    await gateway.handle_inbound_message(_msg("fact"))
 
     assert "Long-term fact" in runner.seen_context
     assert "Daily fact" in runner.seen_context

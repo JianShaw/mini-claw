@@ -7,6 +7,18 @@
 """
 
 from claw.memory.manager import MemoryManager
+from claw.memory.search import HybridMemorySearch, MemoryChunk, MemorySearchResult
+from claw.memory.embedding import FastEmbedProvider
 from claw.memory.store import DailyMemoryStore, LongTermMemoryStore
+from claw.memory.vector_index import SQLiteMemoryVectorIndex
 
-__all__ = ["DailyMemoryStore", "LongTermMemoryStore", "MemoryManager"]
+__all__ = [
+    "DailyMemoryStore",
+    "FastEmbedProvider",
+    "HybridMemorySearch",
+    "LongTermMemoryStore",
+    "MemoryChunk",
+    "MemoryManager",
+    "MemorySearchResult",
+    "SQLiteMemoryVectorIndex",
+]
