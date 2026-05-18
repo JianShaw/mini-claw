@@ -10,6 +10,7 @@ dependencies = [
     "mcp>=1.27.1",
     "openai>=2.36.0",
     "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
     "sqlite-vec>=0.1.9",
 ]
 

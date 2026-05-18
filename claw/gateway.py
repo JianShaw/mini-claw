@@ -25,6 +25,7 @@ class RuntimeGateway:
         default_agent_id: str = "default-agent",
         compressor: ContextCompressor | None = None,
         memory_manager: Any | None = None,
+        skills_registry: Any | None = None,
     ) -> None:
         self._session_store = session_store
         self._agent_runner = agent_runner
@@ -32,6 +33,7 @@ class RuntimeGateway:
         self._default_agent_id = default_agent_id
         self._compressor = compressor
         self._memory_manager = memory_manager
+        self._skills_registry = skills_registry
 
     def _peer_key(self, message: InboundMessage) -> str:
         return build_session_key(message)
@@ -74,6 +76,23 @@ class RuntimeGateway:
         else:
             session.metadata.pop("memory_context", None)
 
+    async def _inject_skill_context(self, session: Session, message: InboundMessage) -> None:
+        """将技能轻量级索引注入 session.metadata，供 runner 读取。
+
+        仅注入 skills_listing（Layer 1：name + description），
+        完整指令（Layer 2）由 LLM 通过 load_skill 工具按需加载。
+        """
+        registry = self._skills_registry
+        if registry is None:
+            session.metadata.pop("skills_listing", None)
+            return
+
+        listing = registry.build_skills_listing()
+        if listing:
+            session.metadata["skills_listing"] = listing
+        else:
+            session.metadata.pop("skills_listing", None)
+
     async def _maybe_update_daily_memory(self, session: Session, *, force: bool = False) -> None:
         """按策略更新 daily memory；无 memory manager 时保持空操作。"""
         if self._memory_manager is None:
@@ -92,6 +111,7 @@ class RuntimeGateway:
         # 自动压缩：在调 runner 之前检查并执行，成功后立即持久化
         compact_summary = await self._auto_compress_if_needed(session, message.text)
         await self._inject_memory_context(session, message)
+        await self._inject_skill_context(session, message)
 
         # AgentRunner 会往 session.history 追加记录
         reply = await self._agent_runner.run(session, message)
@@ -119,6 +139,7 @@ class RuntimeGateway:
         if compact_summary is not None:
             yield StreamChunk(type="system", text=f"[auto-compact] {compact_summary}")
         await self._inject_memory_context(session, message)
+        await self._inject_skill_context(session, message)
 
         full_text = ""
         full_thinking = ""

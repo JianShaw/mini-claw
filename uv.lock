@@ -770,6 +770,7 @@ dependencies = [
     { name = "mcp" },
     { name = "openai" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "sqlite-vec" },
 ]
 
@@ -786,6 +787,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27.1" },
     { name = "openai", specifier = ">=2.36.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
 ]
 

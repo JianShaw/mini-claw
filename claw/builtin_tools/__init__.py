@@ -11,11 +11,15 @@ from __future__ import annotations
 from claw.tools import ToolsRegistry
 
 
-def register_all(registry: ToolsRegistry) -> None:
+def register_all(registry: ToolsRegistry, *, skills_registry: Any = None) -> None:
     """注册所有内置工具到指定注册表。
 
     安全工具默认注册；需要安全配置的工具使用默认安全参数。
     对于生产环境，建议手动注册并配置安全参数。
+
+    Args:
+        registry: 工具注册表
+        skills_registry: 可选的 SkillsRegistry 实例，传入时注册 load_skill 工具
     """
     from claw.builtin_tools.calculator import register as register_calculator
     from claw.builtin_tools.file_ops import register as register_file_ops
@@ -49,3 +53,8 @@ def register_all(registry: ToolsRegistry) -> None:
         register_web_search(registry)
     except ImportError:
         pass
+
+    # 技能加载工具：需要 skills_registry 才能注册
+    if skills_registry is not None:
+        from claw.builtin_tools.skill_loader import register as register_skill_loader
+        register_skill_loader(registry, skills_registry)

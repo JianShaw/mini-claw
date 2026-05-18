@@ -17,6 +17,7 @@ from claw.channels.local import LocalDelivery
 from claw.tools import ToolsRegistry
 from claw.builtin_tools import register_all
 from claw.memory import MemoryManager
+from claw.skills.registry import SkillsRegistry
 from claw.types import StreamChunk
 
 # ANSI 灰色文字用于显示 thinking 内容，黄色用于系统通知
@@ -38,6 +39,7 @@ Commands:
 
 _COMMANDS_HELP += "\n  /memory today|long|update|distill - manage memory files"
 _COMMANDS_HELP += "\n  /tasks - list scheduled tasks, /task run <name> - run a task"
+_COMMANDS_HELP += "\n  /skills list|info|install|remove|deactivate - manage skills"
 
 
 class _ChunkPrinter:
@@ -188,13 +190,96 @@ async def _handle_command(text: str, claw: MiniClaw) -> bool:
             print("Usage: /memory [today|long|update|distill]")
         return True
 
+    if text.startswith("/skills"):
+        parts = text.split(maxsplit=2)
+        action = parts[1].strip() if len(parts) > 1 else "list"
+
+        if action == "list":
+            skills = await claw.list_skills()
+            if not skills:
+                print("No skills available. Use /skills install <path> to add.")
+            else:
+                active = claw._skills_registry.active_skill if claw._skills_registry else None
+                for s in skills:
+                    marker = " *" if active and s.name == active.name else ""
+                    print(f"  {s.name} ({s.source}){marker}")
+                    print(f"    {s.description[:80]}")
+
+        elif action == "info":
+            if len(parts) < 3:
+                print("Usage: /skills info <name>")
+            else:
+                name = parts[2]
+                skill = claw._skills_registry.get(name) if claw._skills_registry else None
+                if skill is None:
+                    print(f"Skill '{name}' not found.")
+                else:
+                    print(f"  Name: {skill.name}")
+                    print(f"  Description: {skill.description}")
+                    print(f"  Tools: {', '.join(skill.tools) or '(none)'}")
+                    print(f"  Source: {skill.source}")
+                    print(f"  Version: {skill.meta.version}")
+                    print(f"  Tags: {', '.join(skill.meta.tags) or '(none)'}")
+
+        elif action == "install":
+            if len(parts) < 3:
+                print("Usage: /skills install <path>")
+            else:
+                path = parts[2]
+                try:
+                    from claw.skills.marketplace import MarketplaceOps
+                    from claw.skills.store import SkillStore
+                    store = SkillStore()
+                    ops = MarketplaceOps(store, claw._skills_registry)
+                    skill = ops.install_from_file(path)
+                    print(f"Installed skill: {skill.name}")
+                except Exception as e:
+                    print(f"Install failed: {e}")
+
+        elif action == "remove":
+            if len(parts) < 3:
+                print("Usage: /skills remove <name>")
+            else:
+                name = parts[2]
+                try:
+                    from claw.skills.marketplace import MarketplaceOps
+                    from claw.skills.store import SkillStore
+                    store = SkillStore()
+                    ops = MarketplaceOps(store, claw._skills_registry)
+                    if ops.remove(name):
+                        print(f"Removed skill: {name}")
+                    else:
+                        print(f"Skill '{name}' not found in store.")
+                except KeyError:
+                    print(f"Skill '{name}' not found.")
+                except Exception as e:
+                    print(f"Remove failed: {e}")
+
+        elif action == "deactivate":
+            await claw.deactivate_skill()
+            print("Skill deactivated.")
+
+        else:
+            print("Usage: /skills [list|info|install|remove|deactivate]")
+        return True
+
+    # 检查是否匹配技能的斜杠命令（如 /code-review）
+    if text.startswith("/") and claw._skills_registry is not None:
+        skill = claw._skills_registry.get_by_slash_name(text.split()[0])
+        if skill:
+            await claw.activate_skill(skill.name)
+            print(f"Skill activated: {skill.name}")
+            print(f"  {skill.description[:80]}")
+            return True
+
     return False
 
 
 def _make_claw() -> MiniClaw:
-    """创建带内置工具的 MiniClaw 实例。"""
+    """创建带内置工具和技能注册表的 MiniClaw 实例。"""
     registry = ToolsRegistry()
-    register_all(registry)
+    skills = SkillsRegistry()
+    register_all(registry, skills_registry=skills)
     delivery = LocalDelivery()
     return MiniClaw(
         delivery=delivery,
@@ -202,6 +287,7 @@ def _make_claw() -> MiniClaw:
         mcp_config_path="mcp_config.json",
         memory_manager=MemoryManager(),
         schedule_config_path="schedule_config.json",
+        skills_registry=skills,
     )
 
 

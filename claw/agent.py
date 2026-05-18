@@ -19,6 +19,10 @@ from claw.ports import Delivery
 from claw.tools import ToolsRegistry
 from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
 
+if True:  # 避免循环导入
+    from claw.skills.registry import SkillsRegistry
+    from claw.skills.types import Skill
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,6 +60,7 @@ class MiniClaw:
         mcp_config_path: str | None = None,
         memory_manager: Any | None = None,
         schedule_config_path: str | None = None,
+        skills_registry: SkillsRegistry | None = None,
     ) -> None:
         self.transport = LocalTransport()
         self.delivery = delivery or _default_delivery()
@@ -83,6 +88,7 @@ class MiniClaw:
             delivery=self.delivery,
             compressor=compressor,
             memory_manager=memory_manager,
+            skills_registry=skills_registry,
         )
         self.processor = ChannelProcessor(
             adapter=LocalAdapter(),
@@ -96,6 +102,7 @@ class MiniClaw:
         self._tools_registry = tools_registry
         self._memory_manager = memory_manager
         self._schedule_config_path = schedule_config_path
+        self._skills_registry = skills_registry
         self._scheduler: Any = None  # TaskScheduler，延迟初始化
         if self._tools_registry is not None and self._schedule_config_path:
             from claw.builtin_tools.scheduler import register as register_scheduler_tool
@@ -194,7 +201,14 @@ class MiniClaw:
     # --- MCP 生命周期管理 ---
 
     async def start(self) -> None:
-        """启动 MCP 连接和定时任务调度器。无配置时为空操作。"""
+        """启动 MCP 连接、定时任务调度器和技能加载。无配置时为空操作。"""
+        # 技能加载
+        if self._skills_registry is not None and hasattr(self._skills_registry, 'load_from_store'):
+            from claw.skills.store import SkillStore
+            store = SkillStore()
+            self._skills_registry.set_store(store)
+            await self._skills_registry.load_from_store()
+
         # MCP 启动
         if self._mcp_config_path:
             try:
@@ -332,6 +346,25 @@ class MiniClaw:
         value = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip().lower())
         value = re.sub(r"_+", "_", value).strip("_-")
         return value[:64] or "scheduled_task"
+
+    # --- 技能管理便捷方法 ---
+
+    async def activate_skill(self, name: str) -> Skill:
+        """激活指定技能。"""
+        if self._skills_registry is None:
+            raise RuntimeError("Skills registry not configured")
+        return self._skills_registry.activate(name)
+
+    async def deactivate_skill(self) -> None:
+        """停用当前激活的技能。"""
+        if self._skills_registry is not None:
+            self._skills_registry.deactivate()
+
+    async def list_skills(self) -> list[Skill]:
+        """列出所有已注册技能。"""
+        if self._skills_registry is None:
+            return []
+        return self._skills_registry.list()
 
 
 def _default_delivery() -> Delivery:

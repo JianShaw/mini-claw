@@ -113,6 +113,14 @@ class DeepSeekAgentRunner:
                 "role": "system",
                 "content": str(memory_context),
             })
+        # 技能信息注入：轻量级索引（Layer 1），供 LLM 浏览可用技能
+        # 完整指令（Layer 2）由 LLM 通过 load_skill 工具按需加载
+        skills_listing = session.metadata.get("skills_listing")
+        if skills_listing:
+            messages.append({
+                "role": "system",
+                "content": str(skills_listing),
+            })
         for m in session.history:
             if m.role == "tool":
                 messages.append({
