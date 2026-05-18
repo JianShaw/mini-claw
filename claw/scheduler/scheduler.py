@@ -1,19 +1,26 @@
-"""TaskScheduler：纯 asyncio 定时任务调度器。
+"""TaskScheduler：单 dispatcher + worker pool 的 asyncio 定时任务调度器。
+
+架构：
+  - 一个 _dispatcher_task 负责计算到期任务并放入队列
+  - max_workers 个 _worker_loop 从队列取出任务执行
+  - _active_jobs 防止同一任务并发执行
+  - _wake_event 用于中断 dispatcher 的睡眠
 
 两种执行模式：
-- LLM 任务（peer_key + prompt）：触发时构建 InboundMessage → gateway 全链路
-- 系统任务（handler）：触发时直接调用 handler（用于内存维护、compact 等）
+  - LLM 任务（peer_key + prompt）：触发时构建 InboundMessage → gateway 全链路
+  - 系统任务（handler）：触发时直接调用 handler（用于内存维护、compact 等）
 """
 from __future__ import annotations
 
 import asyncio
-import importlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 from typing import Any
 
+from claw.scheduler.cron import import_callable, seconds_until_next_cron
+from claw.scheduler.executor import execute_task
 from claw.scheduler.history import TaskRunHistory
 from claw.scheduler.types import (
     CronTrigger,
@@ -21,65 +28,40 @@ from claw.scheduler.types import (
     IntervalTrigger,
     TaskDefinition,
     TaskResult,
-    TaskRunRecord,
 )
 
 if True:  # 避免循环导入
     from claw.gateway import RuntimeGateway
     from claw.scheduler.context import TaskContext
-    from claw.types import InboundMessage
 
 logger = logging.getLogger(__name__)
 
 
-def _import_callable(dotted_path: str) -> Callable[..., Awaitable[TaskResult]]:
-    """根据 dotted path 导入异步可调用对象。"""
-    module_path, _, func_name = dotted_path.rpartition(".")
-    module = importlib.import_module(module_path)
-    func = getattr(module, func_name)
-    return func
+# ---------------------------------------------------------------------------
+# Internal dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class _ScheduleState:
+    """单个任务的调度运行时状态。"""
+    next_run_at: float | None
+    generation: int
+    enabled: bool
 
 
-def _seconds_until_next_cron(expression: str) -> float:
-    """计算距下一个 cron 匹配时间的秒数。"""
-    parts = expression.strip().split()
-    now = datetime.now()
-    candidate = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    # 最多扫描 366 天
-    for _ in range(525960):
-        if _cron_matches(parts, candidate):
-            return (candidate - now).total_seconds()
-        candidate += timedelta(minutes=1)
-    return 86400.0
+@dataclass(slots=True)
+class _QueuedRun:
+    """放入内部队列的待执行任务。"""
+    name: str
+    generation: int
 
 
-def _cron_field_matches(field: str, value: int) -> bool:
-    """判断 cron 单个字段是否匹配给定值。"""
-    if field == "*":
-        return True
-    if field.startswith("*/"):
-        step = int(field[2:])
-        return value % step == 0
-    # 逗号分隔
-    for item in field.split(","):
-        if "-" in item:
-            lo, hi = item.split("-", 1)
-            if int(lo) <= value <= int(hi):
-                return True
-        else:
-            if value == int(item):
-                return True
-    return False
-
-
-def _cron_matches(parts: list[str], dt: datetime) -> bool:
-    """判断 datetime 是否匹配 5 字段 cron 表达式。"""
-    values = [dt.minute, dt.hour, dt.day, dt.month, dt.weekday()]
-    return all(_cron_field_matches(p, v) for p, v in zip(parts, values))
-
+# ---------------------------------------------------------------------------
+# TaskScheduler
+# ---------------------------------------------------------------------------
 
 class TaskScheduler:
-    """定时任务调度器，使用 asyncio 原语实现。
+    """定时任务调度器，使用 dispatcher + worker pool 架构。
 
     生命周期：
         scheduler = TaskScheduler(gateway=gateway, context=task_context)
@@ -87,14 +69,6 @@ class TaskScheduler:
         await scheduler.start()
         ...
         await scheduler.stop()
-
-    LLM 任务（peer_key + prompt）：
-        触发 → 构建 InboundMessage → gateway.handle_inbound_message
-        → session → AgentRunner → Delivery → 结果自然进入 session history
-
-    系统任务（handler）：
-        触发 → 直接调用 handler(task_context, **params)
-        → TaskResult → 记录到 run history
     """
 
     def __init__(
@@ -102,56 +76,105 @@ class TaskScheduler:
         gateway: RuntimeGateway,
         context: TaskContext | None = None,
         history: TaskRunHistory | None = None,
+        max_workers: int = 1,
     ) -> None:
+        if max_workers < 1:
+            raise ValueError(f"max_workers must be >= 1, got {max_workers}")
         self._gateway = gateway
         self._context = context
         self._history = history or TaskRunHistory()
+        self._max_workers = max_workers
+
+        # 任务定义和处理器
         self._tasks: dict[str, TaskDefinition] = {}
         self._handlers: dict[str, Callable[..., Awaitable[TaskResult]] | None] = {}
-        self._asyncio_tasks: dict[str, asyncio.Task] = {}
         self._last_result: dict[str, TaskResult] = {}
-        self._running = False
-        self._stop_event = asyncio.Event()
         self._events: dict[str, asyncio.Event] = {}
 
+        # Dispatcher + worker pool 运行时状态
+        self._running = False
+        self._stop_event = asyncio.Event()
+        self._dispatcher_task: asyncio.Task | None = None
+        self._worker_tasks: set[asyncio.Task] = set()
+        self._queue: asyncio.Queue[_QueuedRun] | None = None
+        self._wake_event: asyncio.Event | None = None
+        self._active_jobs: set[str] = set()
+        self._schedule_state: dict[str, _ScheduleState] = {}
+        self._generation: int = 0
+
+        # 保留旧字段以兼容外部引用（如测试中的 _asyncio_tasks）
+        self._asyncio_tasks: dict[str, asyncio.Task] = {}
+
+    # ------------------------------------------------------------------
+    # 时间原语
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _now() -> float:
+        return time.monotonic()
+
+    def _compute_next_run(self, definition: TaskDefinition) -> float | None:
+        """计算任务下一次调度时间（monotonic 时间戳）。"""
+        now = self._now()
+        trigger = definition.trigger
+        if isinstance(trigger, IntervalTrigger):
+            return now + trigger.seconds
+        if isinstance(trigger, CronTrigger):
+            return now + seconds_until_next_cron(trigger.expression)
+        if isinstance(trigger, EventTrigger):
+            if trigger.idle_timeout_seconds is not None:
+                return now + trigger.idle_timeout_seconds
+            return None
+        return None
+
+    def _set_next_run(self, name: str, next_run_at: float | None) -> None:
+        """更新任务的 next_run_at 并唤醒 dispatcher。"""
+        state = self._schedule_state.get(name)
+        if state is not None:
+            state.next_run_at = next_run_at
+        if self._wake_event is not None:
+            self._wake_event.set()
+
+    # ------------------------------------------------------------------
+    # 注册 / 反注册
+    # ------------------------------------------------------------------
+
     def register(self, definition: TaskDefinition) -> None:
-        """注册任务定义，必须在 start() 之前调用。"""
+        """注册任务定义。"""
         if definition.name in self._tasks:
             raise ValueError(f"Task already registered: {definition.name}")
         self._tasks[definition.name] = definition
 
         if definition.is_llm_task:
-            # LLM 任务：不需要 handler，通过 gateway 路由
             self._handlers[definition.name] = None
         else:
-            # 系统任务：解析 handler
             handler = definition.handler
             if isinstance(handler, str):
-                handler = _import_callable(handler)
+                handler = import_callable(handler)
             self._handlers[definition.name] = handler
 
         # 预创建 event-driven 任务所需的 asyncio.Event
         if isinstance(definition.trigger, EventTrigger):
             if definition.trigger.event_name not in self._events:
                 self._events[definition.trigger.event_name] = asyncio.Event()
+
+        # 运行时注册：初始化调度状态并唤醒 dispatcher
         if self._running and definition.enabled:
-            task = asyncio.create_task(
-                self._run_loop(definition.name), name=f"scheduler-{definition.name}"
+            self._generation += 1
+            self._schedule_state[definition.name] = _ScheduleState(
+                next_run_at=self._compute_next_run(definition),
+                generation=self._generation,
+                enabled=True,
             )
-            self._asyncio_tasks[definition.name] = task
+            if self._wake_event is not None:
+                self._wake_event.set()
 
     async def unregister(self, name: str) -> None:
-        """移除任务并取消其运行中的循环。"""
-        task = self._asyncio_tasks.pop(name, None)
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        """移除任务，不中断正在执行的作业。"""
         self._tasks.pop(name, None)
         self._handlers.pop(name, None)
         self._last_result.pop(name, None)
+        self._schedule_state.pop(name, None)
 
     async def upsert(self, definition: TaskDefinition) -> None:
         """注册任务，替换同名已有任务。"""
@@ -159,39 +182,94 @@ class TaskScheduler:
             await self.unregister(definition.name)
         self.register(definition)
 
+    # ------------------------------------------------------------------
+    # 启动 / 停止
+    # ------------------------------------------------------------------
+
     async def start(self) -> None:
-        """启动所有已注册且 enabled 的任务。"""
+        """启动 dispatcher 和 worker pool。"""
         if self._running:
             return
         self._running = True
         self._stop_event.clear()
-        enabled = [(n, d) for n, d in self._tasks.items() if d.enabled]
-        for name, definition in enabled:
+
+        self._queue = asyncio.Queue()
+        self._active_jobs = set()
+        self._wake_event = asyncio.Event()
+        self._worker_tasks = set()
+
+        # 初始化已注册且 enabled 的任务的调度状态
+        enabled_count = 0
+        for name, definition in self._tasks.items():
+            if not definition.enabled:
+                continue
+            enabled_count += 1
             task_type = "llm" if definition.is_llm_task else "system"
             logger.info(
                 "Scheduler registering task '%s' [%s, %s]",
                 name, task_type, type(definition.trigger).__name__,
             )
-            asyncio_task = asyncio.create_task(
-                self._run_loop(name), name=f"scheduler-{name}"
+            self._generation += 1
+            self._schedule_state[name] = _ScheduleState(
+                next_run_at=self._compute_next_run(definition),
+                generation=self._generation,
+                enabled=True,
             )
-            self._asyncio_tasks[name] = asyncio_task
-        logger.info("Scheduler starting, %d task(s)", len(enabled))
+
+        # 创建 dispatcher
+        self._dispatcher_task = asyncio.create_task(
+            self._dispatcher_loop(), name="scheduler-dispatcher"
+        )
+
+        # 创建 worker pool
+        for i in range(self._max_workers):
+            worker = asyncio.create_task(
+                self._worker_loop(i), name=f"scheduler-worker-{i}"
+            )
+            self._worker_tasks.add(worker)
+
+        logger.info(
+            "Scheduler starting, %d task(s), %d worker(s)",
+            enabled_count, self._max_workers,
+        )
 
     async def stop(self) -> None:
-        """取消所有运行中的任务并等待结束。"""
+        """取消 dispatcher 和所有 worker 并等待结束。"""
         if not self._running:
             return
         self._running = False
         self._stop_event.set()
-        for task in self._asyncio_tasks.values():
-            task.cancel()
-        for task in self._asyncio_tasks.values():
+        if self._wake_event is not None:
+            self._wake_event.set()
+
+        # 取消 dispatcher
+        if self._dispatcher_task is not None:
+            self._dispatcher_task.cancel()
             try:
-                await task
+                await self._dispatcher_task
             except asyncio.CancelledError:
                 pass
+            self._dispatcher_task = None
+
+        # 取消所有 worker
+        for worker in self._worker_tasks:
+            worker.cancel()
+        for worker in self._worker_tasks:
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+        self._worker_tasks.clear()
+
+        self._queue = None
+        self._wake_event = None
+        self._active_jobs.clear()
+        self._schedule_state.clear()
         self._asyncio_tasks.clear()
+
+    # ------------------------------------------------------------------
+    # 事件和手动触发
+    # ------------------------------------------------------------------
 
     async def emit(self, event_name: str, **payload: Any) -> None:
         """发射命名事件，携带 payload 供 task 读取。"""
@@ -201,16 +279,46 @@ class TaskScheduler:
             self._context._event_payloads[event_name].append(payload)
             if len(self._context._event_payloads[event_name]) > 10:
                 self._context._event_payloads[event_name] = self._context._event_payloads[event_name][-10:]
+
+        # 同时设置旧风格的 asyncio.Event（兼容性）
         event = self._events.get(event_name)
         if event is not None:
             event.set()
 
+        # 更新匹配 event trigger 的调度状态
+        now = self._now()
+        for name, definition in self._tasks.items():
+            trigger = definition.trigger
+            if not isinstance(trigger, EventTrigger):
+                continue
+            if trigger.event_name != event_name:
+                continue
+            state = self._schedule_state.get(name)
+            if state is None or not state.enabled:
+                continue
+            if trigger.idle_timeout_seconds is not None:
+                state.next_run_at = now + trigger.idle_timeout_seconds
+            else:
+                state.next_run_at = now
+
+        if self._wake_event is not None:
+            self._wake_event.set()
+
     async def run_now(self, name: str) -> TaskResult:
-        """手动触发指定任务，不论触发类型。"""
+        """手动触发指定任务，不论触发类型。
+
+        如果任务正在被调度执行（active），返回 busy 失败。
+        """
         definition = self._tasks.get(name)
         if definition is None:
             return TaskResult(task_name=name, success=False, error="Task not found")
-        return await self._execute_by_name(name)
+        if name in self._active_jobs:
+            return TaskResult(task_name=name, success=False, error="Task already running")
+        self._active_jobs.add(name)
+        try:
+            return await self._do_execute(name, definition)
+        finally:
+            self._active_jobs.discard(name)
 
     def list_tasks(self) -> list[dict[str, Any]]:
         """返回所有注册任务的状态列表，供 /tasks 显示。"""
@@ -227,164 +335,115 @@ class TaskScheduler:
             })
         return result
 
-    # --- 内部循环分发 ---
+    # ------------------------------------------------------------------
+    # Dispatcher loop
+    # ------------------------------------------------------------------
 
-    async def _run_loop(self, name: str) -> None:
-        """根据 trigger 类型运行对应的循环。"""
-        definition = self._tasks[name]
-        trigger = definition.trigger
-        try:
-            if isinstance(trigger, IntervalTrigger):
-                await self._interval_loop(name, trigger)
-            elif isinstance(trigger, CronTrigger):
-                await self._cron_loop(name, trigger)
-            elif isinstance(trigger, EventTrigger):
-                await self._event_loop(name, trigger)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Task '%s' loop crashed", name)
-
-    async def _interval_loop(self, name: str, trigger: IntervalTrigger) -> None:
-        """每隔 trigger.seconds 执行一次。"""
+    async def _dispatcher_loop(self) -> None:
+        """计算到期任务，放入队列，休眠直到下一个到期时间或被唤醒。"""
         while not self._stop_event.is_set():
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=trigger.seconds
-                )
-                break
-            except asyncio.TimeoutError:
-                pass
-            await self._execute_by_name(name)
+            now = self._now()
 
-    async def _cron_loop(self, name: str, trigger: CronTrigger) -> None:
-        """在 cron 匹配时间执行。"""
-        while not self._stop_event.is_set():
-            delay = _seconds_until_next_cron(trigger.expression)
-            if delay <= 0:
-                delay = 60
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=delay
-                )
-                break
-            except asyncio.TimeoutError:
-                pass
-            await self._execute_by_name(name)
-
-    async def _event_loop(self, name: str, trigger: EventTrigger) -> None:
-        """收到事件时重置计时器，超时无事件则触发 task。"""
-        event = self._events.get(trigger.event_name)
-        if event is None:
-            return
-        timeout = trigger.idle_timeout_seconds
-        while not self._stop_event.is_set():
-            event.clear()
-            try:
-                if timeout is not None:
-                    await asyncio.wait_for(event.wait(), timeout=timeout)
+            # 收集到期任务
+            for name, state in list(self._schedule_state.items()):
+                if state.next_run_at is None:
                     continue
-                else:
-                    await event.wait()
-            except asyncio.TimeoutError:
-                pass
+                if state.next_run_at > now:
+                    continue
+                definition = self._tasks.get(name)
+                if definition is None or not definition.enabled:
+                    continue
+                if not state.enabled:
+                    continue
+                if name in self._active_jobs:
+                    continue
+
+                state.next_run_at = None
+                self._active_jobs.add(name)
+                if self._queue is not None:
+                    await self._queue.put(_QueuedRun(name=name, generation=state.generation))
+                    logger.debug("Dispatcher enqueued task '%s' (gen=%d)", name, state.generation)
+
+            # 计算最近的 next_run_at
+            nearest: float | None = None
+            for state in self._schedule_state.values():
+                if state.next_run_at is None:
+                    continue
+                if nearest is None or state.next_run_at < nearest:
+                    nearest = state.next_run_at
+
+            delay: float | None = None
+            if nearest is not None:
+                delay = max(0.0, nearest - self._now())
+
             if self._stop_event.is_set():
                 break
-            await self._execute_by_name(name)
 
-    # --- 执行调度 ---
+            if self._wake_event is not None:
+                self._wake_event.clear()
+                try:
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
 
-    async def _execute_by_name(self, name: str) -> TaskResult:
-        """根据任务类型选择执行路径，记录到 run history。"""
-        definition = self._tasks[name]
-        triggered_at = datetime.now().isoformat()
+    # ------------------------------------------------------------------
+    # Worker loop
+    # ------------------------------------------------------------------
 
-        if definition.is_llm_task:
-            result = await self._trigger_llm_task(name)
-            task_type = "llm"
-        else:
-            result = await self._execute_handler(name)
-            task_type = "system"
+    async def _worker_loop(self, worker_id: int) -> None:
+        """从队列取出任务执行。"""
+        while not self._stop_event.is_set():
+            if self._queue is None:
+                await asyncio.sleep(0.05)
+                continue
+            try:
+                queued = await asyncio.wait_for(self._queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
 
-        self._last_result[name] = result
+            name = queued.name
+            generation = queued.generation
 
-        # 记录执行历史
-        try:
-            self._history.record(TaskRunRecord(
-                task_name=name,
-                triggered_at=triggered_at,
-                completed_at=datetime.now().isoformat(),
-                success=result.success,
-                task_type=task_type,
-                message=result.message[:500] if result.message else "",
-                error=result.error,
-            ))
-        except Exception:
-            logger.debug("Failed to record run history for '%s'", name, exc_info=True)
+            # 检查任务是否仍然存在且代际匹配
+            definition = self._tasks.get(name)
+            state = self._schedule_state.get(name)
+            if definition is None or state is None or state.generation != generation:
+                self._active_jobs.discard(name)
+                logger.debug(
+                    "Worker-%d skipped stale job '%s' (gen=%d)", worker_id, name, generation,
+                )
+                continue
 
-        return result
+            logger.debug("Worker-%d executing task '%s'", worker_id, name)
+            try:
+                result = await self._do_execute(name, definition)
+                self._last_result[name] = result
+            except Exception:
+                logger.exception("Worker-%d task '%s' raised unhandled exception", worker_id, name)
+            finally:
+                self._active_jobs.discard(name)
 
-    async def _trigger_llm_task(self, name: str) -> TaskResult:
-        """LLM 任务：构建 InboundMessage，走 gateway 全链路。"""
-        definition = self._tasks[name]
-        peer_key = definition.peer_key
-        prompt = definition.prompt or ""
+                # 执行完毕后重新调度（如果任务仍存在且代际匹配）
+                current_def = self._tasks.get(name)
+                current_state = self._schedule_state.get(name)
+                if current_def is not None and current_state is not None:
+                    if current_state.generation == generation and current_def.enabled:
+                        current_state.next_run_at = self._compute_next_run(current_def)
+                        if self._wake_event is not None:
+                            self._wake_event.set()
 
-        if not peer_key or not prompt:
-            return TaskResult(
-                task_name=name, success=False,
-                error="Missing peer_key or prompt for LLM task",
-            )
+    # ------------------------------------------------------------------
+    # 执行委托
+    # ------------------------------------------------------------------
 
-        parts = peer_key.split(":", 2)
-        msg = InboundMessage(
-            channel=parts[0] if len(parts) > 0 else "local",
-            account_id=parts[1] if len(parts) > 1 else "app",
-            peer_id=parts[2] if len(parts) > 2 else "user",
-            sender_id="scheduler",
-            message_id=f"sched-{name}-{int(time.time() * 1000)}",
-            text=prompt,
-            timestamp=int(time.time() * 1000),
-            message_type="text",
-            raw=None,
-            metadata={"scheduled": True, "task_name": name},
+    async def _do_execute(self, name: str, definition: TaskDefinition) -> TaskResult:
+        """委托 executor 执行任务。"""
+        result = await execute_task(
+            name, definition,
+            gateway=self._gateway,
+            context=self._context,
+            handlers=self._handlers,
+            history=self._history,
         )
-
-        logger.info("LLM task '%s' dispatching to %s", name, peer_key)
-        try:
-            reply = await self._gateway.handle_inbound_message(msg)
-            logger.info(
-                "LLM task '%s' completed: %s",
-                name, (reply.text or "")[:120],
-            )
-            return TaskResult(
-                task_name=name, success=True,
-                message=f"Delivered: {(reply.text or '')[:200]}",
-            )
-        except Exception as exc:
-            logger.exception("LLM task '%s' failed", name)
-            return TaskResult(task_name=name, success=False, error=str(exc))
-
-    async def _execute_handler(self, name: str) -> TaskResult:
-        """系统任务：直接调用 handler。"""
-        definition = self._tasks[name]
-        handler = self._handlers.get(name)
-        if handler is None or self._context is None:
-            return TaskResult(
-                task_name=name, success=False,
-                error="No handler or context for system task",
-            )
-
-        logger.info("System task '%s' executing", name)
-        try:
-            result = await handler(self._context, **definition.params)
-            if not isinstance(result, TaskResult):
-                result = TaskResult(task_name=name, success=True, message=str(result))
-            logger.info(
-                "System task '%s' completed: success=%s, message=%s",
-                name, result.success, (result.message or result.error or "")[:120],
-            )
-            return result
-        except Exception as exc:
-            logger.exception("System task '%s' failed", name)
-            return TaskResult(task_name=name, success=False, error=str(exc))
+        self._last_result[name] = result
+        return result

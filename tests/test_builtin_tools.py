@@ -569,6 +569,111 @@ async def test_file_patch_rejects_path_escape(tmp_path) -> None:
     assert "Error" in result
 
 
+# --- protected path (source code write protection) ---
+
+
+@pytest.mark.asyncio
+async def test_file_write_rejects_protected_claw_dir(tmp_path) -> None:
+    """file_write 应拒绝写入 claw/ 目录。"""
+    from claw.builtin_tools.file_ops import register as register_file_ops
+
+    registry = ToolsRegistry()
+    register_file_ops(registry, workspace_root=str(tmp_path))
+
+    (tmp_path / "claw").mkdir()
+    result = await registry.execute("file_write", {
+        "path": "claw/test.py",
+        "content": "print('hello')",
+    })
+    assert "Error" in result
+    assert "source code is not allowed" in result
+
+
+@pytest.mark.asyncio
+async def test_file_write_rejects_protected_tests_dir(tmp_path) -> None:
+    """file_write 应拒绝写入 tests/ 目录。"""
+    from claw.builtin_tools.file_ops import register as register_file_ops
+
+    registry = ToolsRegistry()
+    register_file_ops(registry, workspace_root=str(tmp_path))
+
+    (tmp_path / "tests").mkdir()
+    result = await registry.execute("file_write", {
+        "path": "tests/test_new.py",
+        "content": "def test_x(): pass",
+    })
+    assert "Error" in result
+    assert "source code is not allowed" in result
+
+
+@pytest.mark.asyncio
+async def test_file_write_allows_data_dir(tmp_path) -> None:
+    """file_write 应允许写入 data/ 目录。"""
+    from claw.builtin_tools.file_ops import register as register_file_ops
+
+    registry = ToolsRegistry()
+    register_file_ops(registry, workspace_root=str(tmp_path))
+
+    result = await registry.execute("file_write", {
+        "path": "data/test.json",
+        "content": '{"ok": true}',
+    })
+    assert result.startswith("OK:")
+
+
+@pytest.mark.asyncio
+async def test_file_patch_rejects_protected_claw_dir(tmp_path) -> None:
+    """file_patch 应拒绝修改 claw/ 目录。"""
+    from claw.builtin_tools.file_patch import register as register_file_patch
+
+    registry = ToolsRegistry()
+    register_file_patch(registry, workspace_root=str(tmp_path))
+
+    (tmp_path / "claw").mkdir()
+    (tmp_path / "claw" / "test.py").write_text("old code", encoding="utf-8")
+    result = await registry.execute("file_patch", {
+        "path": "claw/test.py",
+        "old_text": "old",
+        "new_text": "new",
+    })
+    assert "Error" in result
+    assert "source code is not allowed" in result
+
+
+@pytest.mark.asyncio
+async def test_file_patch_rejects_protected_tests_dir(tmp_path) -> None:
+    """file_patch 应拒绝修改 tests/ 目录。"""
+    from claw.builtin_tools.file_patch import register as register_file_patch
+
+    registry = ToolsRegistry()
+    register_file_patch(registry, workspace_root=str(tmp_path))
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("old", encoding="utf-8")
+    result = await registry.execute("file_patch", {
+        "path": "tests/test_x.py",
+        "old_text": "old",
+        "new_text": "new",
+    })
+    assert "Error" in result
+    assert "source code is not allowed" in result
+
+
+@pytest.mark.asyncio
+async def test_file_read_not_blocked_by_protection(tmp_path) -> None:
+    """file_read 应不受保护路径限制，仍可读取源码。"""
+    from claw.builtin_tools.file_ops import register as register_file_ops
+
+    registry = ToolsRegistry()
+    register_file_ops(registry, workspace_root=str(tmp_path))
+
+    (tmp_path / "claw").mkdir()
+    (tmp_path / "claw" / "test.py").write_text("source code", encoding="utf-8")
+    result = await registry.execute("file_read", {"path": "claw/test.py"})
+    assert "source code" in result
+    assert "Error" not in result
+
+
 # --- python_test ---
 
 

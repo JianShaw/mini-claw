@@ -27,6 +27,18 @@
       "handler": "claw.scheduler.tasks.idle_auto_compact",
       "enabled": true,
       "description": "空闲10分钟自动compact"
+    },
+    "push_current_time": {
+      "trigger": {
+        "type": "interval",
+        "seconds": 60
+      },
+      "handler": null,
+      "enabled": true,
+      "description": "每1分钟推送当前时间给用户",
+      "params": {},
+      "peer_key": "local:local-app:local-user",
+      "prompt": "请获取当前时间并以友好的格式推送给用户，格式如：\"当前时间：2026-05-18 16:00:00\""
     }
   }
 }

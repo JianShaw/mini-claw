@@ -42,6 +42,20 @@ def _contains_symlink(path: Path, root: Path) -> bool:
     return False
 
 
+# 禁止 agent 写入的源码目录（相对于 workspace root）
+_PROTECTED_DIR_PREFIXES = ("claw", "tests")
+
+
+def _is_protected_path(path: Path, root: Path) -> bool:
+    """检查路径是否在受保护目录内（禁止写入）。"""
+    try:
+        relative = path.relative_to(root)
+        first_part = relative.parts[0] if relative.parts else ""
+        return first_part in _PROTECTED_DIR_PREFIXES
+    except ValueError:
+        return False
+
+
 def register(
     registry: ToolsRegistry,
     *,
@@ -88,6 +102,8 @@ def register(
         path = result
         if _contains_symlink(path, root):
             return f"Error: symlink not allowed: {path}"
+        if _is_protected_path(path, root):
+            return f"Error: writing to source code is not allowed: {path.relative_to(root)}"
         content = args["content"]
         encoding = args.get("encoding", "utf-8")
         try:

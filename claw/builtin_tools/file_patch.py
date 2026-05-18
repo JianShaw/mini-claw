@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from claw.builtin_tools.file_ops import _contains_symlink, _safe_path
+from claw.builtin_tools.file_ops import _contains_symlink, _is_protected_path, _safe_path
 from claw.tools import Tool, ToolsRegistry
 
 
@@ -40,6 +40,9 @@ def register(
 
         if _contains_symlink(path, root):
             return f"Error: symlink not allowed: {path}"
+
+        if _is_protected_path(path, root):
+            return f"Error: modifying source code is not allowed: {path.relative_to(root)}"
 
         if not old_text:
             return "Error: old_text cannot be empty"
