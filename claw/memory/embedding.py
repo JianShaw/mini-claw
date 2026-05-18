@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Protocol
 
 
@@ -39,7 +40,9 @@ class FastEmbedProvider:
                 raise RuntimeError(
                     "fastembed is not installed; install it to enable local vector memory"
                 ) from exc
-            self._model = TextEmbedding(model_name=self.model_name)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+                self._model = TextEmbedding(model_name=self.model_name)
         return [
             [float(value) for value in vector]
             for vector in self._model.embed(texts)

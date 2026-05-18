@@ -234,10 +234,53 @@ class SQLiteMemoryVectorIndex:
                 source_hash TEXT NOT NULL
             )
         """)
+        # 检测 schema 模式不匹配（vec0 ↔ fallback 切换），按需重建表
+        self._migrate_chunks_schema(conn)
         if self._vec_available:
             self._ensure_vec0_schema(conn)
         else:
             self._ensure_fallback_schema(conn)
+        conn.commit()
+
+    def _migrate_chunks_schema(self, conn: sqlite3.Connection) -> None:
+        """检测 memory_chunks 表的 schema 是否与当前模式匹配，不匹配则重建。
+
+        vec0 模式表没有 source_mtime / embedding 列；fallback 模式有。
+        当模式切换（如安装/卸载 sqlite-vec）后，旧 schema 会触发约束冲突。
+        memory_chunks 是从 markdown 文件派生的可重建数据，直接 DROP 重建是安全的。
+        """
+        existing = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_chunks'"
+            )
+        }
+        if not existing:
+            return  # 表不存在，由后续 _ensure_*_schema 创建
+
+        # 获取实际列名集合
+        actual_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(memory_chunks)")
+        }
+        # 期望的列集合
+        expected_cols = (
+            {"id", "source_path", "source_hash", "scope", "title", "text"}
+            if self._vec_available
+            else {"id", "source_path", "source_mtime", "source_hash", "scope", "title", "text", "embedding"}
+        )
+        if actual_cols == expected_cols:
+            return  # schema 匹配，无需迁移
+
+        logger.info(
+            "memory_chunks schema mismatch (actual=%s, expected=%s); rebuilding table",
+            sorted(actual_cols),
+            sorted(expected_cols),
+        )
+        if self._vec_available:
+            conn.execute("DROP TABLE IF EXISTS vec_memory_chunks")
+        conn.execute("DROP TABLE memory_chunks")
+        conn.execute("DELETE FROM memory_sources")
         conn.commit()
 
     def _ensure_vec0_schema(self, conn: sqlite3.Connection) -> None:
