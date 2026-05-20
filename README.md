@@ -88,6 +88,43 @@ you> continue from where we left off
 claw> ...
 ```
 
+## Web UI (Expert Marketplace)
+
+Mini Claw 提供基于 FastAPI + React 的 Web 界面，支持专家广场浏览、安装/卸载专家、多对话管理。
+
+### 启动
+
+需要两个终端分别运行后端和前端：
+
+**终端 1 — 后端** (port 8000)
+
+```powershell
+uv run mini-claw-web
+```
+
+**终端 2 — 前端** (port 5173，自动代理 `/api` 到后端)
+
+```powershell
+cd web/frontend
+npm install   # 首次需要安装依赖
+npm run dev
+```
+
+打开 http://localhost:5173 即可使用。
+
+### API 文档
+
+后端启动后，FastAPI 自动生成交互式 API 文档，无需额外配置：
+
+- **Swagger UI** — http://localhost:8000/docs
+- **ReDoc** — http://localhost:8000/redoc
+
+### 功能
+
+- **专家广场** — 浏览内置专家，一键安装并开始对话
+- **对话管理** — 创建、切换、删除对话，历史消息持久化到 SQLite
+- **SSE 流式聊天** — 打字机效果实时输出
+
 ## Project Structure
 
 ```text
@@ -105,6 +142,16 @@ mini-claw/
       local.py       # CLI transport, adapter, delivery implementations
     processor.py     # message pipeline (dedup, validate, filter)
     runner.py        # EchoAgentRunner for testing
+  web/
+    backend/
+      app.py         # FastAPI 应用工厂 + DI 注入
+      channel.py     # Web 通道常量 + web_message()
+      server.py      # uvicorn 启动入口
+      routers/       # REST API 路由 (experts, agents, conversations, chat)
+      schemas/       # Pydantic 请求/响应模型
+    frontend/
+      src/           # React + TypeScript + Tailwind
+      vite.config.ts # Vite 配置 (proxy /api → localhost:8000)
   docs/plans/        # design documents
   tests/             # test suite
 ```

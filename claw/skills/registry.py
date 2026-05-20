@@ -110,17 +110,22 @@ class SkillsRegistry:
 
     # --- 两层技能加载 ---
 
-    def build_skills_listing(self) -> str:
+    def build_skills_listing(self, *, enabled_skills: list[str] | None = None) -> str:
         """生成轻量级技能索引，注入系统提示词（Layer 1）。
 
         仅包含 name + description，不包含完整指令。
         引导 LLM 通过 load_skill 工具按需加载完整指令。
         如果有活跃技能，会明确提示 LLM 加载它。
+
+        enabled_skills: 允许的技能名列表，None 表示不过滤，空列表返回空字符串。
         """
-        if not self._skills:
+        skills = list(self._skills.values())
+        if enabled_skills is not None:
+            skills = [s for s in skills if s.name in enabled_skills]
+        if not skills:
             return ""
         lines = ["## Available Skills", ""]
-        for skill in self._skills.values():
+        for skill in skills:
             tools = (
                 f" (tools: {', '.join(skill.tools)})" if skill.tools else ""
             )

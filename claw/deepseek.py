@@ -58,15 +58,41 @@ class DeepSeekAgentRunner:
         """检查是否有可用的工具。"""
         return self._tools_registry is not None and bool(self._tools_registry.list())
 
-    def _build_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        """构建 API 调用参数，有工具时自动附加 tools 参数。"""
+    def _build_kwargs(self, messages: list[dict[str, Any]], session: Session | None = None) -> dict[str, Any]:
+        """构建 API 调用参数，有工具时自动附加 tools 参数。
+
+        session 不为 None 时，从 RuntimeProfile 的 model_config 覆盖本轮 model/temperature。
+        """
+        # 从 RuntimeProfile 解析本轮 model 配置
+        model = self.model
+        temperature = None
+        if session is not None:
+            profile = session.metadata.get("agent_runtime_profile")
+            if profile and profile.get("model_config"):
+                mc = profile["model_config"]
+                if "name" in mc:
+                    model = mc["name"]
+                if "temperature" in mc:
+                    temperature = mc["temperature"]
+
         kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "extra_body": {"thinking": self._thinking_options()},
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if self._has_tools():
-            kwargs["tools"] = self._tools_registry.to_openai_tools()  # type: ignore[union-attr]
+            # 按 Agent 配置过滤本轮可见工具
+            filter_kwargs: dict[str, Any] = {}
+            if session is not None:
+                profile = session.metadata.get("agent_runtime_profile")
+                if profile:
+                    filter_kwargs["enabled_tools"] = profile["enabled_tools"]
+                    filter_kwargs["enabled_mcp_servers"] = profile["enabled_mcp_servers"]
+            tools_schema = self._tools_registry.to_openai_tools(**filter_kwargs)  # type: ignore[union-attr]
+            if tools_schema:
+                kwargs["tools"] = tools_schema
         return kwargs
 
     async def _finalize_tool_limit(
@@ -100,6 +126,10 @@ class DeepSeekAgentRunner:
     def _build_messages(self, session: Session) -> list[dict[str, Any]]:
         """构建发给 LLM 的 messages 列表，正确处理工具调用和工具结果消息。"""
         messages: list[dict[str, Any]] = []
+        # Agent system prompt（最高优先级，来自 RuntimeProfile）
+        profile = session.metadata.get("agent_runtime_profile")
+        if profile and profile.get("system_prompt"):
+            messages.append({"role": "system", "content": profile["system_prompt"]})
         if session.summary:
             messages.append({
                 "role": "system",
@@ -146,7 +176,7 @@ class DeepSeekAgentRunner:
         """同步接口：调用 LLM 生成回复，支持工具调用循环。"""
         session.history.append(ChatMessage(role="user", content=message.text))
         messages = self._build_messages(session)
-        kwargs = self._build_kwargs(messages)
+        kwargs = self._build_kwargs(messages, session)
 
         # 工具执行循环：LLM 返回 tool_calls 时执行工具，将结果送回 LLM
         iterations = 0
@@ -200,7 +230,7 @@ class DeepSeekAgentRunner:
 
             iterations += 1
             # 下一轮循环使用更新后的 messages
-            kwargs = self._build_kwargs(messages)
+            kwargs = self._build_kwargs(messages, session)
 
         # 超过最大迭代次数 → 让 LLM 做最终总结
         logger.warning("Tool iteration limit (%d) reached", self._max_tool_iterations)
@@ -219,7 +249,7 @@ class DeepSeekAgentRunner:
         # 流式场景下可能需要多轮工具调用
         iterations = 0
         while iterations < self._max_tool_iterations:
-            kwargs = self._build_kwargs(messages)
+            kwargs = self._build_kwargs(messages, session)
             kwargs["stream"] = True
 
             try:

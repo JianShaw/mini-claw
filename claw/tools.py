@@ -38,10 +38,22 @@ class ToolsRegistry:
     def list(self) -> list[Tool]:
         return list(self._tools.values())
 
-    def to_openai_tools(self) -> list[dict[str, Any]]:
-        """生成 OpenAI function calling 格式的工具定义列表。"""
+    def to_openai_tools(
+        self,
+        *,
+        enabled_tools: list[str] | None = None,
+        enabled_mcp_servers: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """生成 OpenAI function calling 格式的工具定义列表。
+
+        enabled_tools: 允许的内置/本地工具名列表，None 表示不过滤。
+        enabled_mcp_servers: 允许的 MCP server 名列表，None 表示不过滤。
+            MCP 工具命名空间格式为 `server__tool`，匹配 `server` 前缀。
+        """
         result: list[dict[str, Any]] = []
         for tool in self._tools.values():
+            if not self._tool_allowed(tool.name, enabled_tools, enabled_mcp_servers):
+                continue
             definition: dict[str, Any] = {
                 "type": "function",
                 "function": {
@@ -58,6 +70,34 @@ class ToolsRegistry:
                 }
             result.append(definition)
         return result
+
+    @staticmethod
+    def _tool_allowed(
+        name: str,
+        enabled_tools: list[str] | None,
+        enabled_mcp_servers: list[str] | None,
+    ) -> bool:
+        """判断工具是否在本轮允许列表中。
+
+        规则：
+        - enabled_tools=None, enabled_mcp_servers=None → 全部允许
+        - MCP 工具（含 `__`）：按 enabled_mcp_servers 匹配 server 前缀
+        - 非 MCP 工具：按 enabled_tools 精确匹配
+        """
+        if enabled_tools is None and enabled_mcp_servers is None:
+            return True
+        if "__" in name:
+            # MCP 命名空间工具：按 server 前缀匹配
+            server = name.split("__", 1)[0]
+            if enabled_mcp_servers is not None:
+                return server in enabled_mcp_servers
+            # enabled_mcp_servers=None 表示不过滤 MCP 工具
+            return True
+        else:
+            # 内置/本地工具
+            if enabled_tools is not None:
+                return name in enabled_tools
+            return True
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         """按名称查找并执行工具 handler。找不到时抛出 KeyError。"""

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from claw.ports import AgentRunner, ContextCompressor, Delivery, SessionStore
 from claw.session import build_session_key, create_session
@@ -26,6 +29,7 @@ class RuntimeGateway:
         compressor: ContextCompressor | None = None,
         memory_manager: Any | None = None,
         skills_registry: Any | None = None,
+        agent_resolver: Any | None = None,
     ) -> None:
         self._session_store = session_store
         self._agent_runner = agent_runner
@@ -34,6 +38,7 @@ class RuntimeGateway:
         self._compressor = compressor
         self._memory_manager = memory_manager
         self._skills_registry = skills_registry
+        self._agent_resolver = agent_resolver
 
     def _peer_key(self, message: InboundMessage) -> str:
         return build_session_key(message)
@@ -81,17 +86,49 @@ class RuntimeGateway:
 
         仅注入 skills_listing（Layer 1：name + description），
         完整指令（Layer 2）由 LLM 通过 load_skill 工具按需加载。
+        有 RuntimeProfile 时按 enabled_skills 过滤。
         """
         registry = self._skills_registry
         if registry is None:
             session.metadata.pop("skills_listing", None)
             return
 
-        listing = registry.build_skills_listing()
+        # 按 Agent 配置过滤技能
+        filter_kwargs: dict[str, Any] = {}
+        profile = session.metadata.get("agent_runtime_profile")
+        if profile and profile.get("enabled_skills") is not None:
+            filter_kwargs["enabled_skills"] = profile["enabled_skills"]
+
+        listing = registry.build_skills_listing(**filter_kwargs)
         if listing:
             session.metadata["skills_listing"] = listing
         else:
             session.metadata.pop("skills_listing", None)
+
+    async def _inject_agent_runtime_profile(self, session: Session) -> None:
+        """按 session.agent_id 解析本轮运行配置并注入 session metadata。"""
+        if self._agent_resolver is None:
+            session.metadata.pop("agent_runtime_profile", None)
+            return
+        profile = self._agent_resolver.resolve(session.agent_id)
+        # RuntimeProfile 是 dataclass，需转 dict 才能 JSON 序列化到 SQLite
+        from dataclasses import asdict
+        session.metadata["agent_runtime_profile"] = asdict(profile)
+
+    async def _resolve_session(self, message: InboundMessage) -> Session:
+        """解析消息对应的 session，支持显式 session_id 路由。
+
+        Web 端通过 message.metadata["session_id"] 指定目标 session，
+        避免多对话/多标签页串到同一个 active session。
+        无 session_id 时按 peer active session 兼容 CLI。
+        """
+        session_id = message.metadata.get("session_id")
+        if session_id:
+            session = await self._session_store.get_by_id(session_id)
+            if session is None:
+                raise SessionNotFoundError(session_id)
+            return session
+        return await self._get_or_create_session(message)
 
     async def _maybe_update_daily_memory(self, session: Session, *, force: bool = False) -> None:
         """按策略更新 daily memory；无 memory manager 时保持空操作。"""
@@ -106,10 +143,11 @@ class RuntimeGateway:
         await self._memory_manager.distill_daily_to_long_term()
 
     async def handle_inbound_message(self, message: InboundMessage) -> AgentReply:
-        session = await self._get_or_create_session(message)
+        session = await self._resolve_session(message)
 
         # 自动压缩：在调 runner 之前检查并执行，成功后立即持久化
         compact_summary = await self._auto_compress_if_needed(session, message.text)
+        await self._inject_agent_runtime_profile(session)
         await self._inject_memory_context(session, message)
         await self._inject_skill_context(session, message)
 
@@ -132,12 +170,13 @@ class RuntimeGateway:
         """流式处理：yield StreamChunk，流结束后保存完整 assistant message 并投递。
         thinking 内容不写入 history，但包含在 Delivery 的 AgentReply.metadata 中。
         自动压缩事件通过 StreamChunk(type="system") 通知。"""
-        session = await self._get_or_create_session(message)
+        session = await self._resolve_session(message)
 
         # 自动压缩：在调 runner 之前检查并执行
         compact_summary = await self._auto_compress_if_needed(session, message.text)
         if compact_summary is not None:
             yield StreamChunk(type="system", text=f"[auto-compact] {compact_summary}")
+        await self._inject_agent_runtime_profile(session)
         await self._inject_memory_context(session, message)
         await self._inject_skill_context(session, message)
 
@@ -155,7 +194,12 @@ class RuntimeGateway:
         session.history.append(ChatMessage(role="assistant", content=full_text))
         message.metadata["session_id"] = session.session_id
         await self._maybe_update_daily_memory(session)
+        logger.info(
+            "handle_stream saving session=%s history=%d msgs",
+            session.session_id, len(session.history),
+        )
         await self._session_store.save(session)
+        logger.info("handle_stream saved OK session=%s", session.session_id)
         metadata: dict[str, Any] = {}
         if full_thinking:
             metadata["reasoning"] = full_thinking
@@ -269,3 +313,28 @@ class RuntimeGateway:
         await self._session_store.save(session)
 
         return reply.text
+
+    # --- Agent 绑定的会话创建 ---
+
+    async def create_session_for_agent(
+        self,
+        message: InboundMessage,
+        agent_id: str,
+    ) -> Session:
+        """创建绑定指定 agent_id 的 session 并激活。"""
+        session = create_session(message, agent_id=agent_id)
+        await self._session_store.save(session)
+        await self._session_store.set_active(self._peer_key(message), session.session_id)
+        return session
+
+    async def get_session_by_id(self, session_id: str) -> Session | None:
+        """按 session_id 获取 session。"""
+        return await self._session_store.get_by_id(session_id)
+
+
+class SessionNotFoundError(Exception):
+    """显式 session_id 找不到对应 session 时抛出。"""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"Session not found: {session_id}")

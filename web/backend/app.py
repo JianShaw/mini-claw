@@ -1,0 +1,144 @@
+"""FastAPI 应用工厂。"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+
+from claw.agent_runtime.factory import AgentFactory
+from claw.agent_runtime.resolver import AgentResolver
+from claw.agent_runtime.store import SqliteAgentStore
+from claw.expert.registry import ExpertRegistry
+from claw.expert.marketplace import ExpertMarketplace
+from claw.expert.service import ExpertService
+from claw.expert.store import SqliteExpertStore
+from claw.gateway import RuntimeGateway
+from claw.storage.session_store import SqliteSessionStore
+from claw.storage.sqlite import get_connection, init_db
+from web.backend.routers import agents, chat, conversations, experts
+
+
+def create_app(
+    *,
+    gateway: RuntimeGateway | None = None,
+    expert_store: SqliteExpertStore | None = None,
+    agent_store: SqliteAgentStore | None = None,
+    db_path: str = "data/mini_claw.sqlite",
+) -> FastAPI:
+    """创建 FastAPI 应用实例。
+
+    gateway 为 None 时自动构建含 AgentResolver 的最小 Gateway。
+    测试时可注入完整 Gateway（带真实或 mock Runner）。
+    """
+    app = FastAPI(title="Mini Claw Web API", version="0.1.0")
+
+    # 初始化 SQLite
+    conn = get_connection(db_path)
+    init_db(conn)
+
+    # 构建 stores
+    _expert_store = expert_store or SqliteExpertStore(conn)
+    _agent_store = agent_store or SqliteAgentStore(conn)
+
+    # 首次启动时导入 bundled 专家（SQLite 无数据才触发，避免重复）
+    if not _expert_store.list_all():
+        _expert_store.init_bundled()
+
+    # 确保默认 Agent 存在
+    _agent_store.ensure_default()
+
+    # 构建 gateway（如果未注入）
+    _gateway = gateway
+    if _gateway is None:
+        _session_store = SqliteSessionStore(conn)
+        _gateway = _build_default_gateway(_agent_store, _session_store)
+
+    # 注册路由
+    app.include_router(experts.router, prefix="/api/v1")
+    app.include_router(agents.router, prefix="/api/v1")
+    app.include_router(conversations.router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
+
+    # 将依赖注入到路由
+    app.state.gateway = _gateway
+    app.state.expert_store = _expert_store
+    app.state.agent_store = _agent_store
+
+    _wire_deps(app, _gateway, _expert_store, _agent_store)
+
+    return app
+
+
+def _build_default_gateway(
+    agent_store: SqliteAgentStore, session_store: SqliteSessionStore
+) -> RuntimeGateway:
+    """构建带真实 DeepSeekAgentRunner 的 RuntimeGateway。
+
+    注册内置工具 + 技能 + 记忆管理器 + AgentResolver，
+    使 Web 端聊天走完整的 Agent 链路（非 Noop 占位）。
+    """
+    from claw.builtin_tools import register_all
+    from claw.deepseek import DeepSeekAgentRunner
+    from claw.memory import MemoryManager
+    from claw.skills.registry import SkillsRegistry
+    from claw.tools import ToolsRegistry
+
+    # 注册内置工具（read_file, write_file, run_command 等）
+    tools_registry = ToolsRegistry()
+    skills_registry = SkillsRegistry()
+    register_all(tools_registry, skills_registry=skills_registry)
+
+    # DeepSeekAgentRunner：通过 OpenAI 兼容接口调用 LLM
+    runner = DeepSeekAgentRunner(tools_registry=tools_registry)
+
+    # AgentResolver：按 session.agent_id 解析运行配置
+    resolver = AgentResolver(agent_store)
+
+    return RuntimeGateway(
+        session_store=session_store,
+        agent_runner=runner,
+        delivery=_NoopDelivery(),
+        memory_manager=MemoryManager(),
+        skills_registry=skills_registry,
+        agent_resolver=resolver,
+    )
+
+
+class _NoopDelivery:
+    """Web 端不需要 Delivery 投递（SSE 直接返回），提供空实现。"""
+
+    async def send(self, message, reply):
+        pass
+
+
+def _wire_deps(
+    app: FastAPI,
+    gateway: RuntimeGateway,
+    expert_store: SqliteExpertStore,
+    agent_store: SqliteAgentStore,
+) -> None:
+    """将 gateway/store 注入到路由的 Depends 中。"""
+    from web.backend.deps import (
+        get_agent_factory,
+        get_agent_resolver,
+        get_agent_store,
+        get_expert_marketplace,
+        get_expert_registry,
+        get_expert_service,
+        get_expert_store,
+    )
+
+    # FastAPI dependency_overrides 机制：
+    # 路由通过 Depends(get_expert_store) 声明依赖，这里用工厂创建的真实实例替换 deps.py 中的默认实现。
+    # 好处：测试时可注入 mock，生产时可注入共享实例（同一个 SQLite 连接、同一个 Gateway）。
+    app.dependency_overrides[get_expert_store] = lambda: expert_store
+    app.dependency_overrides[get_expert_service] = lambda: ExpertService(expert_store)
+    app.dependency_overrides[get_expert_registry] = lambda: ExpertRegistry(expert_store)
+    app.dependency_overrides[get_expert_marketplace] = lambda: ExpertMarketplace(expert_store)
+    app.dependency_overrides[get_agent_store] = lambda: agent_store
+    app.dependency_overrides[get_agent_factory] = lambda: AgentFactory(expert_store, agent_store)
+    app.dependency_overrides[get_agent_resolver] = lambda: AgentResolver(agent_store)
+
+    # conversations/chat 路由依赖 Gateway（含 session 管理、agent runner、delivery），
+    # 必须注入完整 Gateway 而非从 deps.py 默认构建（默认是 NoopRunner）
+    app.dependency_overrides[conversations.get_gateway] = lambda: gateway
+    app.dependency_overrides[chat.get_gateway] = lambda: gateway

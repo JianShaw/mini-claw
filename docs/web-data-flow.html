@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mini Claw — Web 端数据流转</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e4e4e7;
+    --text-dim: #9ca3af;
+    --accent: #6366f1;
+    --accent2: #22d3ee;
+    --green: #34d399;
+    --orange: #fb923c;
+    --pink: #f472b6;
+    --yellow: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 40px 20px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+
+  h1 { text-align: center; font-size: 2rem; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: var(--text-dim); margin-bottom: 48px; font-size: 0.95rem; }
+
+  /* ---- Flow Diagram ---- */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: center;
+  }
+
+  .layer {
+    position: relative;
+    width: 100%;
+    padding: 20px 0;
+  }
+
+  .layer-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    text-align: center;
+  }
+
+  .nodes {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 22px;
+    min-width: 180px;
+    max-width: 260px;
+    text-align: center;
+    position: relative;
+    transition: transform 0.2s, box-shadow 0.2s;
+    cursor: default;
+  }
+  .node:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(99,102,241,0.15);
+  }
+  .node .icon { font-size: 1.5rem; margin-bottom: 6px; }
+  .node .name { font-weight: 700; font-size: 0.95rem; margin-bottom: 4px; }
+  .node .desc { font-size: 0.8rem; color: var(--text-dim); }
+
+  .node.frontend  { border-top: 3px solid var(--accent2); }
+  .node.router    { border-top: 3px solid var(--accent); }
+  .node.gateway   { border-top: 3px solid var(--green); }
+  .node.agent     { border-top: 3px solid var(--orange); }
+  .node.llm       { border-top: 3px solid var(--pink); }
+  .node.storage   { border-top: 3px solid var(--yellow); }
+
+  /* Arrows */
+  .arrow-down {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 0;
+    color: var(--text-dim);
+  }
+  .arrow-down .line {
+    width: 2px;
+    height: 28px;
+    background: linear-gradient(to bottom, var(--accent), var(--green));
+    border-radius: 1px;
+  }
+  .arrow-down .head {
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--green);
+  }
+  .arrow-down .label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-top: 4px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    background: var(--surface);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  .bidirectional .line {
+    background: linear-gradient(to bottom, var(--pink), var(--accent2));
+  }
+  .bidirectional .head {
+    border-top: 8px solid var(--accent2);
+  }
+  .bidirectional .line::before {
+    content: '';
+    display: block;
+    width: 2px;
+    height: 28px;
+    background: linear-gradient(to bottom, var(--accent2), var(--pink));
+    border-radius: 1px;
+    position: relative;
+    top: -28px;
+  }
+
+  /* ---- Data Structure Cards ---- */
+  .ds-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+    margin-top: 48px;
+  }
+  .ds-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .ds-card h3 {
+    font-size: 0.9rem;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ds-card h3 .tag {
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .tag.struct { background: #6366f130; color: var(--accent); }
+  .tag.stream { background: #22d3ee20; color: var(--accent2); }
+
+  .ds-card pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 0.78rem;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    overflow-x: auto;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .ds-card pre .key { color: var(--accent); }
+  .ds-card pre .val { color: var(--green); }
+  .ds-card pre .comment { color: #6b7280; }
+
+  /* ---- Sequence Table ---- */
+  .seq-section { margin-top: 56px; }
+  .seq-section h2 {
+    font-size: 1.3rem;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+
+  .seq {
+    list-style: none;
+    position: relative;
+    padding-left: 32px;
+  }
+  .seq::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--border);
+    border-radius: 1px;
+  }
+  .seq li {
+    position: relative;
+    margin-bottom: 14px;
+  }
+  .seq li::before {
+    content: '';
+    position: absolute;
+    left: -25px;
+    top: 8px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg);
+  }
+  .seq li .step-title {
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+  .seq li .step-desc {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .seq li .step-code {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-top: 6px;
+    display: inline-block;
+    color: var(--accent2);
+  }
+
+  /* ---- Tool Loop ---- */
+  .tool-loop {
+    margin-top: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .tool-loop h3 {
+    text-align: center;
+    margin-bottom: 16px;
+    font-size: 1rem;
+  }
+  .loop-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .loop-step {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 0.82rem;
+    text-align: center;
+    min-width: 100px;
+  }
+  .loop-arrow {
+    color: var(--accent);
+    font-size: 1.2rem;
+    font-weight: 700;
+  }
+  .loop-back {
+    width: 100%;
+    text-align: center;
+    margin-top: 8px;
+    color: var(--orange);
+    font-size: 0.75rem;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+
+  /* ---- SSE Events ---- */
+  .sse-section { margin-top: 40px; }
+  .sse-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.82rem;
+  }
+  .sse-table th, .sse-table td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .sse-table th {
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .sse-table code {
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.78rem;
+  }
+
+  footer {
+    text-align: center;
+    margin-top: 64px;
+    padding: 24px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Mini Claw Web 数据流转</h1>
+<p class="subtitle">Browser &rarr; FastAPI Router &rarr; RuntimeGateway &rarr; DeepSeekAgentRunner &rarr; LLM API &rarr; SSE Stream Back</p>
+
+<!-- ==================== FLOW DIAGRAM ==================== -->
+
+<div class="flow">
+
+  <!-- Layer: Browser -->
+  <div class="layer">
+    <div class="layer-label">Frontend</div>
+    <div class="nodes">
+      <div class="node frontend">
+        <div class="icon">🌐</div>
+        <div class="name">React App</div>
+        <div class="desc">EventSource 连接 /api/chat/stream</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <div class="line"></div>
+    <div class="head"></div>
+    <div class="label">POST /api/chat/stream { text, session_id }</div>
+  </div>
+
+  <!-- Layer: Router -->
+  <div class="layer">
+    <div class="layer-label">Web Backend — FastAPI Router</div>
+    <div class="nodes">
+      <div class="node router">
+        <div class="icon">🔀</div>
+        <div class="name">chat_stream()</div>
+        <div class="desc">接收 ChatStreamRequest，构造 InboundMessage</div>
+      </div>
+      <div class="node router">
+        <div class="icon">📨</div>
+        <div class="name">web_message()</div>
+        <div class="desc">channel.py — 填充路由字段 + metadata</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <div class="line"></div>
+    <div class="head"></div>
+    <div class="label">InboundMessage → gw.handle_stream(msg)</div>
+  </div>
+
+  <!-- Layer: Gateway -->
+  <div class="layer">
+    <div class="layer-label">Core — RuntimeGateway</div>
+    <div class="nodes">
+      <div class="node gateway">
+        <div class="icon">🧭</div>
+        <div class="name">_resolve_session()</div>
+        <div class="desc">按 session_id 查找/创建 Session</div>
+      </div>
+      <div class="node gateway">
+        <div class="icon">💉</div>
+        <div class="name">上下文注入</div>
+        <div class="desc">memory + skills + agent profile 注入 session.metadata</div>
+      </div>
+      <div class="node gateway">
+        <div class="icon">📦</div>
+        <div class="name">后处理</div>
+        <div class="desc">保存 history + delivery 通知</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <div class="line"></div>
+    <div class="head"></div>
+    <div class="label">Session + InboundMessage → runner.run_stream()</div>
+  </div>
+
+  <!-- Layer: Agent Runner -->
+  <div class="layer">
+    <div class="layer-label">Agent — DeepSeekAgentRunner</div>
+    <div class="nodes">
+      <div class="node agent">
+        <div class="icon">🤖</div>
+        <div class="name">_build_messages()</div>
+        <div class="desc">system prompt + summary + memory + skills + history → messages[]</div>
+      </div>
+      <div class="node agent">
+        <div class="icon">⚡</div>
+        <div class="name">run_stream()</div>
+        <div class="desc">流式调用 LLM，处理 tool_calls 循环</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">
+    <div class="line"></div>
+    <div class="head"></div>
+    <div class="label">messages[] → DeepSeek API (stream=true)</div>
+  </div>
+
+  <!-- Layer: LLM -->
+  <div class="layer">
+    <div class="layer-label">LLM — DeepSeek API</div>
+    <div class="nodes">
+      <div class="node llm">
+        <div class="icon">🧠</div>
+        <div class="name">chat.completions.create</div>
+        <div class="desc">流式返回 reasoning_content / content / tool_calls</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Return Path -->
+  <div class="arrow-down bidirectional">
+    <div class="line"></div>
+    <div class="head"></div>
+    <div class="label">StreamChunk (thinking | content | tool_call | tool_result) ↑ SSE 回传</div>
+  </div>
+
+  <!-- Layer: Storage -->
+  <div class="layer">
+    <div class="layer-label">Storage</div>
+    <div class="nodes">
+      <div class="node storage">
+        <div class="icon">🗄️</div>
+        <div class="name">SqliteSessionStore</div>
+        <div class="desc">会话历史、对话元数据持久化</div>
+      </div>
+      <div class="node storage">
+        <div class="icon">🛠️</div>
+        <div class="name">ToolsRegistry</div>
+        <div class="desc">工具注册、发现、调用</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ==================== KEY DATA STRUCTURES ==================== -->
+
+<div class="ds-grid">
+
+  <div class="ds-card">
+    <h3>InboundMessage <span class="tag struct">struct</span></h3>
+    <pre>{
+  <span class="key">channel</span>:    <span class="val">"web"</span>,           <span class="comment">// 固定值</span>
+  <span class="key">account_id</span>: <span class="val">"default"</span>,       <span class="comment">// 固定值</span>
+  <span class="key">peer_id</span>:    <span class="val">"web"</span>,           <span class="comment">// 固定值</span>
+  <span class="key">sender_id</span>:  <span class="val">"web_sender"</span>,    <span class="comment">// 固定值</span>
+  <span class="key">text</span>:       <span class="val">"用户输入"</span>,       <span class="comment">// 动态</span>
+  <span class="key">metadata</span>: {
+    <span class="key">session_id</span>: <span class="val">"sess_xxx"</span>     <span class="comment">// 路由用</span>
+  }
+}</pre>
+  </div>
+
+  <div class="ds-card">
+    <h3>StreamChunk <span class="tag stream">stream</span></h3>
+    <pre>{
+  <span class="key">type</span>: <span class="val">"thinking" | "content" | "system"
+       | "tool_call" | "tool_result"</span>,
+  <span class="key">text</span>: <span class="val">"对应的文本片段"</span>
+}
+
+<span class="comment">// SSE 格式 → Browser</span>
+data: {"type":"content","text":"..."}
+data: {"type":"thinking","text":"..."}
+data: "[DONE]"</pre>
+  </div>
+
+  <div class="ds-card">
+    <h3>Session <span class="tag struct">struct</span></h3>
+    <pre>{
+  <span class="key">session_id</span>:  <span class="val">"sess_xxx"</span>,
+  <span class="key">peer_key</span>:    <span class="val">"web:default:web"</span>,
+  <span class="key">history</span>: [                  <span class="comment">// 对话历史</span>
+    {<span class="key">role</span>:<span class="val">"user"</span>, <span class="key">content</span>:<span class="val">"..."</span>},
+    {<span class="key">role</span>:<span class="val">"assistant"</span>, <span class="key">content</span>:<span class="val">"..."</span>}
+  ],
+  <span class="key">summary</span>:     <span class="val">"压缩后的摘要"</span>,
+  <span class="key">metadata</span>: {
+    <span class="key">memory_context</span>:    <span class="val">"..."</span>,
+    <span class="key">skills_listing</span>:    <span class="val">"..."</span>,
+    <span class="key">agent_runtime_profile</span>: <span class="val">"..."</span>
+  }
+}</pre>
+  </div>
+
+  <div class="ds-card">
+    <h3>LLM Messages <span class="tag struct">struct</span></h3>
+    <pre><span class="comment">// _build_messages() 最终输出:</span>
+[
+  {<span class="key">role</span>:<span class="val">"system"</span>,     <span class="key">content</span>:<span class="val">"专家 prompt"</span>},
+  {<span class="key">role</span>:<span class="val">"system"</span>,     <span class="key">content</span>:<span class="val">"对话摘要..."</span>},
+  {<span class="key">role</span>:<span class="val">"system"</span>,     <span class="key">content</span>:<span class="val">"记忆上下文..."</span>},
+  {<span class="key">role</span>:<span class="val">"system"</span>,     <span class="key">content</span>:<span class="val">"技能列表..."</span>},
+  {<span class="key">role</span>:<span class="val">"user"</span>,       <span class="key">content</span>:<span class="val">"用户消息"</span>},
+  {<span class="key">role</span>:<span class="val">"assistant"</span>,  <span class="key">content</span>:<span class="val">"..."</span>,
+   <span class="key">tool_calls</span>:[...]},
+  {<span class="key">role</span>:<span class="val">"tool"</span>,       <span class="key">content</span>:<span class="val">"结果"</span>}
+]</pre>
+  </div>
+
+</div>
+
+<!-- ==================== STEP-BY-STEP SEQUENCE ==================== -->
+
+<div class="seq-section">
+  <h2>逐步调用链</h2>
+
+  <ol class="seq">
+    <li>
+      <div class="step-title">1. 浏览器发送消息</div>
+      <div class="step-desc">React 前端通过 EventSource 发起 POST 请求</div>
+      <div class="step-code">POST /api/chat/stream { "text": "你好", "session_id": "sess_abc" }</div>
+    </li>
+    <li>
+      <div class="step-title">2. Router 构造 InboundMessage</div>
+      <div class="step-desc">chat_stream() 调用 web_message() 将用户输入封装为标准 InboundMessage</div>
+      <div class="step-code">web/backend/routers/chat.py → web_message(text, session_id=...)</div>
+    </li>
+    <li>
+      <div class="step-title">3. Gateway 解析会话</div>
+      <div class="step-desc">从 InboundMessage.metadata 提取 session_id，从 SqliteSessionStore 加载 Session 对象</div>
+      <div class="step-code">gateway.py → _resolve_session(message) → session_store.get_by_id(id)</div>
+    </li>
+    <li>
+      <div class="step-title">4. Gateway 注入上下文</div>
+      <div class="step-desc">依次注入：agent_runtime_profile（专家 prompt）、memory_context（记忆）、skills_listing（技能）到 session.metadata</div>
+      <div class="step-code">_inject_agent_runtime_profile → _inject_memory_context → _inject_skill_context</div>
+    </li>
+    <li>
+      <div class="step-title">5. Agent Runner 构建消息列表</div>
+      <div class="step-desc">_build_messages() 按 system prompt → summary → memory → skills → history 顺序组装 messages[]</div>
+      <div class="step-code">deepseek.py → _build_messages(session)</div>
+    </li>
+    <li>
+      <div class="step-title">6. 流式调用 LLM API</div>
+      <div class="step-desc">将 messages[] 发送给 DeepSeek API，stream=True，逐 chunk 接收</div>
+      <div class="step-code">client.chat.completions.create(messages=..., stream=True)</div>
+    </li>
+    <li>
+      <div class="step-title">7. 解析流式响应 → StreamChunk</div>
+      <div class="step-desc">每个 chunk 的 delta 被分类为 thinking / content / tool_calls，包装为 StreamChunk 向上 yield</div>
+      <div class="step-code">yield StreamChunk(type="content", text=delta.content)</div>
+    </li>
+    <li>
+      <div class="step-title">8. 工具调用循环（如需要）</div>
+      <div class="step-desc">若 LLM 返回 tool_calls → 执行工具 → 将结果追加到 messages → 再次调用 LLM，最多循环 max_tool_iterations 次</div>
+      <div class="step-code">yield StreamChunk(type="tool_call") → execute → yield StreamChunk(type="tool_result")</div>
+    </li>
+    <li>
+      <div class="step-title">9. SSE 回传浏览器</div>
+      <div class="step-desc">Gateway handle_stream yield 每个 StreamChunk → Router 序列化为 SSE event → 浏览器实时渲染</div>
+      <div class="step-code">yield {"data": '{"type":"content","text":"..."}'} → data: [DONE]</div>
+    </li>
+    <li>
+      <div class="step-title">10. 后处理 & 持久化</div>
+      <div class="step-desc">流结束后，将完整 assistant 回复追加到 session.history，调用 session_store.save() 持久化</div>
+      <div class="step-code">session.history.append(ChatMessage(...)) → session_store.save(session)</div>
+    </li>
+  </ol>
+</div>
+
+<!-- ==================== TOOL CALL LOOP ==================== -->
+
+<div class="tool-loop">
+  <h3>工具调用循环 (Tool Call Loop)</h3>
+  <div class="loop-diagram">
+    <div class="loop-step">LLM 返回<br><strong>tool_calls</strong></div>
+    <div class="loop-arrow">&rarr;</div>
+    <div class="loop-step">解析函数名<br>+ 参数 JSON</div>
+    <div class="loop-arrow">&rarr;</div>
+    <div class="loop-step">ToolsRegistry<br>调用工具</div>
+    <div class="loop-arrow">&rarr;</div>
+    <div class="loop-step">结果追加到<br>messages[]</div>
+    <div class="loop-arrow">&rarr;</div>
+    <div class="loop-step">再次调用<br>LLM API</div>
+  </div>
+  <div class="loop-back">&upharpoonleft; 重复直到 LLM 不再返回 tool_calls 或达到 max_tool_iterations</div>
+</div>
+
+<!-- ==================== SSE EVENT TYPES ==================== -->
+
+<div class="sse-section">
+  <h2>SSE 事件类型</h2>
+  <table class="sse-table">
+    <thead>
+      <tr>
+        <th>type</th>
+        <th>含义</th>
+        <th>前端处理</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>thinking</code></td>
+        <td>LLM 推理过程（DeepSeek thinking mode）</td>
+        <td>折叠面板显示思考过程</td>
+      </tr>
+      <tr>
+        <td><code>content</code></td>
+        <td>正式回复内容</td>
+        <td>逐字追加到聊天气泡</td>
+      </tr>
+      <tr>
+        <td><code>system</code></td>
+        <td>系统事件（auto-compact 等）</td>
+        <td>状态栏提示</td>
+      </tr>
+      <tr>
+        <td><code>tool_call</code></td>
+        <td>工具被调用（显示函数名）</td>
+        <td>加载动画 + 工具名称</td>
+      </tr>
+      <tr>
+        <td><code>tool_result</code></td>
+        <td>工具执行结果</td>
+        <td>折叠显示返回值</td>
+      </tr>
+      <tr>
+        <td><code>[DONE]</code></td>
+        <td>流结束标记</td>
+        <td>关闭 EventSource 连接</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  Mini Claw &mdash; Web 数据流转文档 &middot; 自动生成于 2026-05-20
+</footer>
+
+</div>
+</body>
+</html>
