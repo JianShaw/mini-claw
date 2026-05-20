@@ -58,8 +58,23 @@ def create_app(
     app.include_router(conversations.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
 
+    # --- 统一在 _gateway 确定后创建 Web Channel 组件 ---
+    from claw.channels.web.adapter import WebAdapter
+    from claw.channels.web.transport import WebTransport
+    from claw.processor import ChannelProcessor, ErrorPolicy, InMemoryDedupeStore
+
+    web_transport = WebTransport()
+    web_processor = ChannelProcessor(
+        adapter=WebAdapter(),
+        gateway=_gateway,
+        dedupe_store=InMemoryDedupeStore(),
+        error_policy=ErrorPolicy.RAISE,  # Web SSE 需要 Router 外层 catch 并 encode_error
+    )
+
     # 将依赖注入到路由
     app.state.gateway = _gateway
+    app.state.web_transport = web_transport
+    app.state.web_processor = web_processor
     app.state.expert_store = _expert_store
     app.state.agent_store = _agent_store
 
@@ -76,6 +91,8 @@ def _build_default_gateway(
     注册内置工具 + 技能 + 记忆管理器 + AgentResolver，
     使 Web 端聊天走完整的 Agent 链路（非 Noop 占位）。
     """
+    from claw.agent_runtime.context import RuntimeContextBuilder
+    from claw.agent_runtime.wrapper import ContextBuildingAgentRunner
     from claw.builtin_tools import register_all
     from claw.deepseek import DeepSeekAgentRunner
     from claw.memory import MemoryManager
@@ -90,15 +107,24 @@ def _build_default_gateway(
     # DeepSeekAgentRunner：通过 OpenAI 兼容接口调用 LLM
     runner = DeepSeekAgentRunner(tools_registry=tools_registry)
 
+    # Memory Manager：context_builder 和 Gateway 共享同一实例
+    memory_manager = MemoryManager()
+
+    # 包装 runner：上下文注入对所有 Runner 生效
+    context_builder = RuntimeContextBuilder(
+        memory_manager=memory_manager,
+        skills_registry=skills_registry,
+    )
+    wrapped_runner = ContextBuildingAgentRunner(runner, context_builder)
+
     # AgentResolver：按 session.agent_id 解析运行配置
     resolver = AgentResolver(agent_store)
 
     return RuntimeGateway(
         session_store=session_store,
-        agent_runner=runner,
+        agent_runner=wrapped_runner,
         delivery=_NoopDelivery(),
-        memory_manager=MemoryManager(),
-        skills_registry=skills_registry,
+        memory_manager=memory_manager,
         agent_resolver=resolver,
     )
 

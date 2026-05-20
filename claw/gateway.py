@@ -28,7 +28,6 @@ class RuntimeGateway:
         default_agent_id: str = "default-agent",
         compressor: ContextCompressor | None = None,
         memory_manager: Any | None = None,
-        skills_registry: Any | None = None,
         agent_resolver: Any | None = None,
     ) -> None:
         self._session_store = session_store
@@ -37,7 +36,6 @@ class RuntimeGateway:
         self._default_agent_id = default_agent_id
         self._compressor = compressor
         self._memory_manager = memory_manager
-        self._skills_registry = skills_registry
         self._agent_resolver = agent_resolver
 
     def _peer_key(self, message: InboundMessage) -> str:
@@ -64,46 +62,6 @@ class RuntimeGateway:
         if summary is not None:
             await self._session_store.save(session)
         return summary
-
-    async def _inject_memory_context(self, session: Session, message: InboundMessage) -> None:
-        """在调用 runner 前准备记忆上下文。
-
-        Gateway 不直接拼 LLM messages，而是把 memory_context 放进
-        session.metadata；具体 runner 再决定如何写入提示词。
-        """
-        # 无 memory manager 时清理旧 context，保持兼容性
-        if self._memory_manager is None:
-            session.metadata.pop("memory_context", None)
-            return
-        context = await self._memory_manager.build_context(message)
-        if context:
-            session.metadata["memory_context"] = context
-        else:
-            session.metadata.pop("memory_context", None)
-
-    async def _inject_skill_context(self, session: Session, message: InboundMessage) -> None:
-        """将技能轻量级索引注入 session.metadata，供 runner 读取。
-
-        仅注入 skills_listing（Layer 1：name + description），
-        完整指令（Layer 2）由 LLM 通过 load_skill 工具按需加载。
-        有 RuntimeProfile 时按 enabled_skills 过滤。
-        """
-        registry = self._skills_registry
-        if registry is None:
-            session.metadata.pop("skills_listing", None)
-            return
-
-        # 按 Agent 配置过滤技能
-        filter_kwargs: dict[str, Any] = {}
-        profile = session.metadata.get("agent_runtime_profile")
-        if profile and profile.get("enabled_skills") is not None:
-            filter_kwargs["enabled_skills"] = profile["enabled_skills"]
-
-        listing = registry.build_skills_listing(**filter_kwargs)
-        if listing:
-            session.metadata["skills_listing"] = listing
-        else:
-            session.metadata.pop("skills_listing", None)
 
     async def _inject_agent_runtime_profile(self, session: Session) -> None:
         """按 session.agent_id 解析本轮运行配置并注入 session metadata。"""
@@ -148,10 +106,8 @@ class RuntimeGateway:
         # 自动压缩：在调 runner 之前检查并执行，成功后立即持久化
         compact_summary = await self._auto_compress_if_needed(session, message.text)
         await self._inject_agent_runtime_profile(session)
-        await self._inject_memory_context(session, message)
-        await self._inject_skill_context(session, message)
 
-        # AgentRunner 会往 session.history 追加记录
+        # AgentRunner（或 wrapper）负责注入 memory/skill 上下文
         reply = await self._agent_runner.run(session, message)
 
         # 标记自动压缩事件，供上层（chat app）感知
@@ -177,8 +133,6 @@ class RuntimeGateway:
         if compact_summary is not None:
             yield StreamChunk(type="system", text=f"[auto-compact] {compact_summary}")
         await self._inject_agent_runtime_profile(session)
-        await self._inject_memory_context(session, message)
-        await self._inject_skill_context(session, message)
 
         full_text = ""
         full_thinking = ""
@@ -303,6 +257,7 @@ class RuntimeGateway:
             timestamp=0,
             message_type="text",
             raw=None,
+            metadata={"skip_runtime_context": True},
         )
         reply = await self._agent_runner.run(temp_session, temp_msg)
 

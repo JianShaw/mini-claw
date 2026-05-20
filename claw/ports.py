@@ -25,6 +25,7 @@ class Adapter(Protocol):
 class Gateway(Protocol):
     """网关：接收 InboundMessage，协调会话、Agent、投递。"""
     async def handle_inbound_message(self, message: InboundMessage) -> AgentReply: ...
+    async def handle_stream(self, message: InboundMessage) -> AsyncIterator[StreamChunk]: ...
 
 
 class DedupeStore(Protocol):
@@ -57,6 +58,11 @@ class AgentRunner(Protocol):
     """Agent 运行器：接收会话和当前消息，返回回复。"""
     async def run(self, session: Session, message: InboundMessage) -> AgentReply: ...
     async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]: ...
+
+
+class ContextBuilder(Protocol):
+    """运行时上下文构建器：在 AgentRunner 调用 LLM 前准备记忆和技能上下文。"""
+    async def build(self, session: Session, message: InboundMessage) -> None: ...
 
 
 class Delivery(Protocol):

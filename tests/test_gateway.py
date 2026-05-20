@@ -119,14 +119,22 @@ class _MemoryContextRunner:
 
 
 async def test_gateway_injects_memory_context_before_runner(tmp_path) -> None:
-    """Memory context should be available before the runner builds LLM messages."""
+    """RuntimeContextBuilder 应在 runner 执行前注入 memory context。"""
+    from claw.agent_runtime.context import RuntimeContextBuilder
+    from claw.agent_runtime.wrapper import ContextBuildingAgentRunner
+
     manager = MemoryManager(tmp_path, today_provider=lambda: date(2026, 5, 14))
     manager.long_store.write("# Memory\n- Long-term fact\n")
     manager.daily_store.write(date(2026, 5, 14), "# Daily\n- Daily fact\n")
     runner = _MemoryContextRunner()
+
+    # 通过 wrapper 注入上下文（替代旧 Gateway._inject_memory_context）
+    context_builder = RuntimeContextBuilder(memory_manager=manager)
+    wrapped_runner = ContextBuildingAgentRunner(runner, context_builder)
+
     gateway = RuntimeGateway(
         session_store=InMemorySessionStore(),
-        agent_runner=runner,
+        agent_runner=wrapped_runner,
         delivery=LocalDelivery(),
         memory_manager=manager,
     )

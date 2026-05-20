@@ -61,6 +61,13 @@ class SqliteSessionStore:
             self._persisted_count[session.session_id] = (
                 session.history_offset + len(session.history)
             )
+        else:
+            # 轻量查询：不加载消息但统计数量，供 list_sessions 展示用
+            count_row = self._conn.execute(
+                "SELECT COUNT(*) FROM session_messages WHERE session_id = ?",
+                (session.session_id,),
+            ).fetchone()
+            session.metadata["message_count"] = count_row[0] if count_row else 0
         return session
 
     @staticmethod

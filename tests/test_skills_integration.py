@@ -106,27 +106,23 @@ class TestSkillContextInjection:
         assert len(system_msgs) == 0
 
 
-class TestGatewaySkillInjection:
-    """验证 Gateway 只注入轻量级索引。"""
+class TestRuntimeContextBuilderSkillInjection:
+    """验证 RuntimeContextBuilder 注入轻量级索引（从 Gateway 迁移）。"""
 
     @pytest.mark.asyncio
     async def test_listing_always_injected(self):
-        """有技能注册时，Gateway 注入 skills_listing。"""
+        """有技能注册时，RuntimeContextBuilder 注入 skills_listing。"""
+        from claw.agent_runtime.context import RuntimeContextBuilder
+
         registry = SkillsRegistry()
         registry.register(_make_skill("translate"))
         registry.register(_make_skill("code-review"))
 
         session = _make_session()
 
-        gateway = RuntimeGateway(
-            session_store=InMemorySessionStore(),
-            agent_runner=_FakeRunner(),
-            delivery=_FakeDelivery(),
-            skills_registry=registry,
-        )
-
+        builder = RuntimeContextBuilder(skills_registry=registry)
         msg = _make_message("hello")
-        await gateway._inject_skill_context(session, msg)
+        await builder.build(session, msg)
 
         assert "skills_listing" in session.metadata
         assert "translate" in session.metadata["skills_listing"]
@@ -135,17 +131,14 @@ class TestGatewaySkillInjection:
     @pytest.mark.asyncio
     async def test_no_registry_no_injection(self):
         """无注册表时，清理旧的技能信息。"""
+        from claw.agent_runtime.context import RuntimeContextBuilder
+
         session = _make_session()
         session.metadata["skills_listing"] = "old listing"
 
-        gateway = RuntimeGateway(
-            session_store=InMemorySessionStore(),
-            agent_runner=_FakeRunner(),
-            delivery=_FakeDelivery(),
-        )
-
+        builder = RuntimeContextBuilder()
         msg = _make_message()
-        await gateway._inject_skill_context(session, msg)
+        await builder.build(session, msg)
 
         assert "skills_listing" not in session.metadata
 
@@ -209,15 +202,12 @@ class TestLoadSkillTool:
         ))
 
         # 注入 Layer 1
+        from claw.agent_runtime.context import RuntimeContextBuilder
+
         session = _make_session()
-        gateway = RuntimeGateway(
-            session_store=InMemorySessionStore(),
-            agent_runner=_FakeRunner(),
-            delivery=_FakeDelivery(),
-            skills_registry=registry,
-        )
+        builder = RuntimeContextBuilder(skills_registry=registry)
         msg = _make_message()
-        await gateway._inject_skill_context(session, msg)
+        await builder.build(session, msg)
 
         # 验证系统提示词只有轻量索引
         runner = DeepSeekAgentRunner(api_key="fake")

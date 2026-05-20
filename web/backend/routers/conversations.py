@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from claw.channels.web.adapter import WebAdapter
 from claw.gateway import RuntimeGateway
-from web.backend.channel import web_message
 from web.backend.schemas.conversation import (
     ChatMessageSchema,
     ConversationListItem,
@@ -27,7 +27,7 @@ async def create_conversation(
     gw: RuntimeGateway = Depends(get_gateway),
 ) -> ConversationSchema:
     """创建对话：通过 Gateway 绑定 agent_id。"""
-    msg = web_message()
+    msg = WebAdapter.make_message()
     session = await gw.create_session_for_agent(msg, request.agent_id)
     return _session_to_schema(session)
 
@@ -36,7 +36,7 @@ async def create_conversation(
 async def list_conversations(
     gw: RuntimeGateway = Depends(get_gateway),
 ) -> list[ConversationListItem]:
-    msg = web_message()
+    msg = WebAdapter.make_message()
     sessions = await gw.list_sessions(msg)
     return [_session_to_list_item(s) for s in sessions]
 
@@ -57,7 +57,7 @@ async def delete_conversation(
     session_id: str,
     gw: RuntimeGateway = Depends(get_gateway),
 ) -> None:
-    msg = web_message()
+    msg = WebAdapter.make_message()
     await gw.delete_session(msg, session_id)
 
 
@@ -80,10 +80,13 @@ def _session_to_schema(session, include_messages: bool = False) -> ConversationS
 
 
 def _session_to_list_item(session) -> ConversationListItem:
+    # SQLite list_sessions 用 COUNT 查询填充 metadata["message_count"]
+    # InMemory session_store 则直接用 len(history)
+    message_count = session.metadata.get("message_count", len(session.history))
     return ConversationListItem(
         session_id=session.session_id,
         agent_id=session.agent_id,
         channel=session.channel,
         summary=session.summary,
-        message_count=len(session.history),
+        message_count=message_count,
     )

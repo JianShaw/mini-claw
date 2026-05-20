@@ -18,6 +18,8 @@ from claw.session import JsonlSessionStore
 from claw.ports import Delivery
 from claw.tools import ToolsRegistry
 from claw.types import AgentReply, InboundMessage, PlatformEvent, Session, StreamChunk
+from claw.agent_runtime.context import RuntimeContextBuilder
+from claw.agent_runtime.wrapper import ContextBuildingAgentRunner
 
 if True:  # 避免循环导入
     from claw.skills.registry import SkillsRegistry
@@ -71,7 +73,8 @@ class MiniClaw:
         resolved_max_tokens = _env_int("COMPACT_MAX_TOKENS", max_tokens or 8000)
         resolved_keep_rounds = _env_int("COMPACT_KEEP_ROUNDS", keep_rounds or 4)
 
-        # 自动压缩配置：compressor 注入到 Gateway
+        # 自动压缩：必须用原始 runner 创建 compressor
+        # （isinstance 检查 wrapper 会失败，导致自动压缩静默失效）
         compressor = None
         if auto_compact and isinstance(runner, DeepSeekAgentRunner):
             from claw.compressor import ContextCompressor
@@ -82,13 +85,19 @@ class MiniClaw:
                 keep_rounds=resolved_keep_rounds,
             )
 
+        # 包装 runner：上下文注入对所有 Runner 生效
+        context_builder = RuntimeContextBuilder(
+            memory_manager=memory_manager,
+            skills_registry=skills_registry,
+        )
+        wrapped_runner = ContextBuildingAgentRunner(runner, context_builder)
+
         self.gateway = RuntimeGateway(
             session_store=self._session_store,
-            agent_runner=runner,
+            agent_runner=wrapped_runner,
             delivery=self.delivery,
             compressor=compressor,
             memory_manager=memory_manager,
-            skills_registry=skills_registry,
         )
         self.processor = ChannelProcessor(
             adapter=LocalAdapter(),
