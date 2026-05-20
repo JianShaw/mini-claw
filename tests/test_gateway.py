@@ -29,6 +29,11 @@ def _msg(text: str = "hello") -> InboundMessage:
     )
 
 
+# _msg() 对应的 peer identity 常量，供 session 管理方法使用
+_PK = "local:app:user"
+_ID = dict(channel="local", account_id="app", peer_id="user", sender_id="user")
+
+
 def _msg_other_peer(text: str = "hello") -> InboundMessage:
     """构造不同 peer 的 InboundMessage（peer_id 不同）。"""
     return InboundMessage(
@@ -351,7 +356,7 @@ async def test_gateway_create_new_session() -> None:
     first_session = await store.get_active("local:app:user")
 
     # 手动创建新 session
-    new_session = await gateway.create_new_session(_msg())
+    new_session = await gateway.create_new_session(_PK, **_ID)
     assert new_session.session_id != first_session.session_id
     # 活跃 session 应切换到新建的
     active = await store.get_active("local:app:user")
@@ -367,9 +372,9 @@ async def test_gateway_list_sessions() -> None:
         delivery=LocalDelivery(),
     )
     await gateway.handle_inbound_message(_msg("first"))
-    await gateway.create_new_session(_msg())
+    await gateway.create_new_session(_PK, **_ID)
 
-    sessions = await gateway.list_sessions(_msg())
+    sessions = await gateway.list_sessions(_PK)
     assert len(sessions) == 2
 
 
@@ -384,10 +389,10 @@ async def test_gateway_select_session() -> None:
     await gateway.handle_inbound_message(_msg("first"))
     s1 = await store.get_active("local:app:user")
 
-    new_session = await gateway.create_new_session(_msg())
+    new_session = await gateway.create_new_session(_PK, **_ID)
 
     # 切回 s1
-    result = await gateway.select_session(_msg(), s1.session_id)
+    result = await gateway.select_session(_PK, s1.session_id)
     assert result is not None
     assert result.session_id == s1.session_id
     active = await store.get_active("local:app:user")
@@ -402,7 +407,7 @@ async def test_gateway_select_session_not_found() -> None:
         agent_runner=EchoAgentRunner(),
         delivery=LocalDelivery(),
     )
-    result = await gateway.select_session(_msg(), "nonexistent")
+    result = await gateway.select_session(_PK, "nonexistent")
     assert result is None
 
 
@@ -423,7 +428,7 @@ async def test_gateway_select_session_rejects_other_peer() -> None:
     s_b = await store.get_active("local:app:other-user")
 
     # peer A 尝试 select peer B 的 session → 应返回 None
-    result = await gateway.select_session(_msg(), s_b.session_id)
+    result = await gateway.select_session(_PK, s_b.session_id)
     assert result is None
     # peer A 的 active 没变
     active = await store.get_active("local:app:user")
@@ -440,10 +445,10 @@ async def test_gateway_delete_session() -> None:
     )
     await gateway.handle_inbound_message(_msg("first"))
     s1 = await store.get_active("local:app:user")
-    new_session = await gateway.create_new_session(_msg())
+    new_session = await gateway.create_new_session(_PK, **_ID)
 
-    await gateway.delete_session(_msg(), s1.session_id)
-    sessions = await gateway.list_sessions(_msg())
+    await gateway.delete_session(_PK, s1.session_id)
+    sessions = await gateway.list_sessions(_PK)
     assert len(sessions) == 1
     assert sessions[0].session_id == new_session.session_id
 
@@ -479,7 +484,7 @@ async def test_gateway_compact_session_generates_summary() -> None:
     assert len(session.history) > 0
 
     # compact
-    summary = await gateway.compact_session(_msg())
+    summary = await gateway.compact_session(_PK)
     assert summary is not None
 
     # 验证 session 状态
@@ -496,7 +501,7 @@ async def test_gateway_compact_empty_session_returns_none() -> None:
         agent_runner=_SummaryRunner(),
         delivery=LocalDelivery(),
     )
-    result = await gateway.compact_session(_msg())
+    result = await gateway.compact_session(_PK)
     assert result is None
 
 
@@ -508,7 +513,7 @@ async def test_gateway_compact_no_session_returns_none() -> None:
         agent_runner=_SummaryRunner(),
         delivery=LocalDelivery(),
     )
-    result = await gateway.compact_session(_msg())
+    result = await gateway.compact_session(_PK)
     assert result is None
 
 
@@ -600,7 +605,7 @@ async def test_gateway_compact_with_compressor_uses_force() -> None:
     await gateway.handle_inbound_message(_msg("second"))
 
     # 手动 compact（force=True，绕过阈值）
-    summary = await gateway.compact_session(_msg())
+    summary = await gateway.compact_session(_PK)
     assert summary is not None
 
     session = await store.get_active("local:app:user")
@@ -622,7 +627,7 @@ async def test_gateway_compact_fallback_full_clear_without_compressor() -> None:
     assert len(session.history) > 0
 
     # 手动 compact（无 compressor，fallback 全量清空）
-    summary = await gateway.compact_session(_msg())
+    summary = await gateway.compact_session(_PK)
     assert summary is not None
 
     session = await store.get_active("local:app:user")

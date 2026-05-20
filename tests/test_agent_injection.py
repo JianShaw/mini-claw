@@ -55,6 +55,13 @@ def _cli_message(text: str) -> InboundMessage:
     )
 
 
+# peer identity 常量
+_WEB_PK = "web:default:web"
+_WEB_ID = dict(channel="web", account_id="default", peer_id="web", sender_id="web")
+_CLI_PK = "local:default:cli"
+_CLI_ID = dict(channel="local", account_id="default", peer_id="cli", sender_id="cli")
+
+
 # ---- Fixtures ----
 
 @pytest.fixture
@@ -118,7 +125,7 @@ class TestAgentRuntimeProfileInjection:
             id="ag_custom", name="Custom",
             source_expert="general-assistant", system_prompt="You are a pirate.",
         ))
-        session = await gateway.create_session_for_agent(_web_message("setup"), "ag_custom")
+        session = await gateway.create_session_for_agent(_WEB_PK, "ag_custom", **_WEB_ID)
         assert session.agent_id == "ag_custom"
 
         reply = await gateway.handle_inbound_message(
@@ -139,7 +146,7 @@ class TestResolveSession:
     async def test_web_with_session_id(
         self, gateway: RuntimeGateway
     ) -> None:
-        session = await gateway.create_new_session(_web_message("setup"))
+        session = await gateway.create_new_session(_WEB_PK, **_WEB_ID)
         reply = await gateway.handle_inbound_message(
             _web_message("hello", session_id=session.session_id)
         )
@@ -169,7 +176,7 @@ class TestCreateSessionForAgent:
             id="ag_code", name="Code",
             source_expert="code-helper", system_prompt="Code expert",
         ))
-        session = await gateway.create_session_for_agent(_web_message("setup"), "ag_code")
+        session = await gateway.create_session_for_agent(_WEB_PK, "ag_code", **_WEB_ID)
         assert session.agent_id == "ag_code"
         assert session.channel == "web"
 
@@ -178,7 +185,7 @@ class TestCreateSessionForAgent:
         self, gateway: RuntimeGateway, session_store: InMemorySessionStore
     ) -> None:
         session = await gateway.create_session_for_agent(
-            _web_message("setup"), "default-agent"
+            _WEB_PK, "default-agent", **_WEB_ID
         )
         active = await session_store.get_active("web:default:web")
         assert active is not None
@@ -190,7 +197,7 @@ class TestGetSessionById:
     async def test_returns_session(
         self, gateway: RuntimeGateway
     ) -> None:
-        session = await gateway.create_new_session(_cli_message("setup"))
+        session = await gateway.create_new_session(_CLI_PK, **_CLI_ID)
         found = await gateway.get_session_by_id(session.session_id)
         assert found is not None
         assert found.session_id == session.session_id
@@ -210,7 +217,7 @@ class TestStreamWithAgentProfile:
             id="ag_stream", name="Stream",
             source_expert="general-assistant", system_prompt="Stream expert",
         ))
-        session = await gateway.create_session_for_agent(_web_message("setup"), "ag_stream")
+        session = await gateway.create_session_for_agent(_WEB_PK, "ag_stream", **_WEB_ID)
         chunks = []
         async for chunk in gateway.handle_stream(
             _web_message("hello", session_id=session.session_id)

@@ -44,6 +44,11 @@ def _web_msg(text: str, session_id: str | None = None) -> InboundMessage:
     )
 
 
+# Web peer identity 常量
+_WEB_PK = "web:default:web"
+_WEB_ID = dict(channel="web", account_id="default", peer_id="web", sender_id="web")
+
+
 @pytest.fixture
 def conn(tmp_path: Path):
     c = get_connection(tmp_path / "test.sqlite")
@@ -94,7 +99,7 @@ class TestExpertAgentSessionFlow:
 
         # 3. 创建 Session(agent_id) → 验证绑定
         session = await gateway.create_session_for_agent(
-            _web_msg("setup"), agent.id
+            _WEB_PK, agent.id, **_WEB_ID
         )
         assert session.agent_id == agent.id
 
@@ -115,7 +120,7 @@ class TestExpertAgentSessionFlow:
         # 6. 创建另一个 Agent → 不同 prompt
         agent2 = factory.create_from_expert("general-assistant")
         session2 = await gateway.create_session_for_agent(
-            _web_msg("setup2"), agent2.id
+            _WEB_PK, agent2.id, **_WEB_ID
         )
         reply3 = await gateway.handle_inbound_message(
             _web_msg("hello", session_id=session2.session_id)
@@ -140,7 +145,7 @@ class TestExpertAgentSessionFlow:
         agent_store.ensure_default()
 
         session = await gateway.create_session_for_agent(
-            _web_msg("setup"), "default-agent"
+            _WEB_PK, "default-agent", **_WEB_ID
         )
         chunks = []
         async for chunk in gateway.handle_stream(
@@ -171,7 +176,7 @@ class TestExpertAgentSessionFlow:
 
         # 创建对话
         session = await gateway.create_session_for_agent(
-            _web_msg("setup"), agent.id
+            _WEB_PK, agent.id, **_WEB_ID
         )
         assert session.agent_id == agent.id
 

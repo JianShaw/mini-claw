@@ -112,6 +112,14 @@ class MiniClaw:
         self._memory_manager = memory_manager
         self._schedule_config_path = schedule_config_path
         self._skills_registry = skills_registry
+
+        # CLI peer 身份（构造时确定，运行期间不变）
+        _id_msg = self._routing_message()
+        self._peer_key = f"{_id_msg.channel}:{_id_msg.account_id}:{_id_msg.peer_id}"
+        self._peer_channel = _id_msg.channel
+        self._peer_account_id = _id_msg.account_id
+        self._peer_peer_id = _id_msg.peer_id
+        self._peer_sender_id = _id_msg.sender_id
         self._scheduler: Any = None  # TaskScheduler，延迟初始化
         if self._tools_registry is not None and self._schedule_config_path:
             from claw.builtin_tools.scheduler import register as register_scheduler_tool
@@ -145,28 +153,29 @@ class MiniClaw:
 
     async def new_session(self) -> Session:
         """创建新会话并激活。"""
-        msg = self._routing_message()
-        return await self.gateway.create_new_session(msg)
+        return await self.gateway.create_new_session(
+            self._peer_key,
+            channel=self._peer_channel,
+            account_id=self._peer_account_id,
+            peer_id=self._peer_peer_id,
+            sender_id=self._peer_sender_id,
+        )
 
     async def list_sessions(self) -> list[Session]:
         """列出当前 peer 下的所有会话。"""
-        msg = self._routing_message()
-        return await self.gateway.list_sessions(msg)
+        return await self.gateway.list_sessions(self._peer_key)
 
     async def select_session(self, session_id: str) -> Session | None:
         """切换到指定会话。"""
-        msg = self._routing_message()
-        return await self.gateway.select_session(msg, session_id)
+        return await self.gateway.select_session(self._peer_key, session_id)
 
     async def delete_session(self, session_id: str) -> None:
         """删除指定会话。"""
-        msg = self._routing_message()
-        return await self.gateway.delete_session(msg, session_id)
+        return await self.gateway.delete_session(self._peer_key, session_id)
 
     async def compact_session(self) -> str | None:
         """压缩当前会话的上下文，返回生成的摘要。"""
-        msg = self._routing_message()
-        return await self.gateway.compact_session(msg)
+        return await self.gateway.compact_session(self._peer_key)
 
     async def memory_today(self) -> str:
         """读取当天 daily memory，用于 CLI 的 /memory today。"""
@@ -184,10 +193,7 @@ class MiniClaw:
         """手动强制更新当天 daily memory。"""
         if self._memory_manager is None:
             return False
-        msg = self._routing_message()
-        session = await self._session_store.get_active(
-            f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
-        )
+        session = await self._session_store.get_active(self._peer_key)
         if session is None:
             return False
         return await self._memory_manager.force_update_daily(session)
@@ -201,10 +207,7 @@ class MiniClaw:
 
     async def get_active_session_id(self) -> str | None:
         """获取当前活跃会话的 ID。"""
-        msg = self._routing_message()
-        session = await self._session_store.get_active(
-            f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
-        )
+        session = await self._session_store.get_active(self._peer_key)
         return session.session_id if session else None
 
     # --- MCP 生命周期管理 ---
@@ -347,8 +350,7 @@ class MiniClaw:
 
     def _current_peer_key(self) -> str:
         """获取当前 peer 的 peer_key。"""
-        msg = self._routing_message()
-        return f"{msg.channel}:{msg.account_id}:{msg.peer_id}"
+        return self._peer_key
 
     def _normalize_task_name(self, name: str) -> str:
         """Normalize an LLM-provided task name for config keys."""

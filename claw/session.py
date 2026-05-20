@@ -11,24 +11,49 @@ from claw.types import ChatMessage, InboundMessage, Session
 
 def build_session_key(message: InboundMessage) -> str:
     """根据消息的路由字段拼接确定性 key，同一用户在同一频道始终映射到同一会话。"""
-    return f"{message.channel}:{message.account_id}:{message.peer_id}"
+    return build_peer_key(message.channel, message.account_id, message.peer_id)
+
+
+def build_peer_key(channel: str, account_id: str, peer_id: str) -> str:
+    """从身份字段构建 peer_key：channel:account_id:peer_id。"""
+    return f"{channel}:{account_id}:{peer_id}"
 
 
 def create_session(message: InboundMessage, agent_id: str = "default-agent") -> Session:
     """根据 InboundMessage 创建新 Session，生成唯一 session_id，用路由字段做 session_key。"""
-    session_key = build_session_key(message)
-    return Session(
-        session_id=f"sess_{uuid4().hex}",
-        session_key=session_key,
+    return create_session_from_identity(
         channel=message.channel,
         account_id=message.account_id,
         peer_id=message.peer_id,
         sender_id=message.sender_id,
         agent_id=agent_id,
-        metadata={
-            "channel": message.channel,
-            **message.metadata,
-        },
+        metadata=message.metadata,
+    )
+
+
+def create_session_from_identity(
+    *,
+    channel: str,
+    account_id: str,
+    peer_id: str,
+    sender_id: str,
+    agent_id: str = "default-agent",
+    metadata: dict | None = None,
+) -> Session:
+    """从身份字段创建新 Session，用于 session 管理场景（非消息驱动）。
+
+    与 create_session(message) 对称，但不需要构造 InboundMessage。
+    """
+    session_key = build_peer_key(channel, account_id, peer_id)
+    return Session(
+        session_id=f"sess_{uuid4().hex}",
+        session_key=session_key,
+        channel=channel,
+        account_id=account_id,
+        peer_id=peer_id,
+        sender_id=sender_id,
+        agent_id=agent_id,
+        metadata={"channel": channel, **(metadata or {})},
     )
 
 

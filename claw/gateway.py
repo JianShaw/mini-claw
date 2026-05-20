@@ -9,7 +9,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from claw.ports import AgentRunner, ContextCompressor, Delivery, SessionStore
-from claw.session import build_session_key, create_session
+from claw.session import build_peer_key, create_session, create_session_from_identity
 from claw.types import AgentReply, ChatMessage, InboundMessage, Session, StreamChunk
 
 
@@ -39,7 +39,7 @@ class RuntimeGateway:
         self._agent_resolver = agent_resolver
 
     def _peer_key(self, message: InboundMessage) -> str:
-        return build_session_key(message)
+        return build_peer_key(message.channel, message.account_id, message.peer_id)
 
     async def _get_or_create_session(self, message: InboundMessage) -> Session:
         """获取活跃 session，没有则创建并激活。"""
@@ -159,50 +159,58 @@ class RuntimeGateway:
             metadata["reasoning"] = full_thinking
         await self._delivery.send(message, AgentReply(text=full_text, metadata=metadata))
 
-    # --- 会话管理方法 ---
+    # --- 会话管理方法（接受 peer_key，不依赖 InboundMessage） ---
 
-    async def create_new_session(self, message: InboundMessage) -> Session:
+    async def create_new_session(
+        self,
+        peer_key: str,
+        *,
+        channel: str,
+        account_id: str,
+        peer_id: str,
+        sender_id: str,
+        agent_id: str | None = None,
+    ) -> Session:
         """创建新 session 并激活。"""
-        session = create_session(message, agent_id=self._default_agent_id)
-        await self._session_store.save(session)
-        await self._session_store.set_active(
-            self._peer_key(message), session.session_id
+        session = create_session_from_identity(
+            channel=channel,
+            account_id=account_id,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            agent_id=agent_id or self._default_agent_id,
         )
+        await self._session_store.save(session)
+        await self._session_store.set_active(peer_key, session.session_id)
         return session
 
-    async def list_sessions(self, message: InboundMessage) -> list[Session]:
+    async def list_sessions(self, peer_key: str) -> list[Session]:
         """列出 peer 下的所有 session。"""
-        return await self._session_store.list_sessions(self._peer_key(message))
+        return await self._session_store.list_sessions(peer_key)
 
     async def select_session(
-        self, message: InboundMessage, session_id: str
+        self, peer_key: str, session_id: str
     ) -> Session | None:
         """切换活跃 session，返回切换后的 session。仅允许切换同 peer 下的 session。"""
         session = await self._session_store.get_by_id(session_id)
         if session is None:
             return None
         # 归属校验：session 必须属于当前 peer
-        if session.session_key != self._peer_key(message):
+        if session.session_key != peer_key:
             return None
-        await self._session_store.set_active(
-            self._peer_key(message), session_id
-        )
+        await self._session_store.set_active(peer_key, session_id)
         return session
 
-    async def delete_session(
-        self, message: InboundMessage, session_id: str
-    ) -> None:
+    async def delete_session(self, peer_key: str, session_id: str) -> None:
         """删除指定 session。"""
         await self._session_store.delete(session_id)
 
-    async def compact_session(self, message: InboundMessage) -> str | None:
+    async def compact_session(self, peer_key: str) -> str | None:
         """压缩当前活跃 session 的上下文。
 
         有 compressor 时使用 force=True 保留最近 N 轮；
         无 compressor 时 fallback 到全量压缩（清空 history）。
         两种路径都正确设置 history_offset。
         """
-        peer_key = self._peer_key(message)
         session = await self._session_store.get_active(peer_key)
         if session is None:
             return None
@@ -273,13 +281,24 @@ class RuntimeGateway:
 
     async def create_session_for_agent(
         self,
-        message: InboundMessage,
+        peer_key: str,
         agent_id: str,
+        *,
+        channel: str,
+        account_id: str,
+        peer_id: str,
+        sender_id: str,
     ) -> Session:
         """创建绑定指定 agent_id 的 session 并激活。"""
-        session = create_session(message, agent_id=agent_id)
+        session = create_session_from_identity(
+            channel=channel,
+            account_id=account_id,
+            peer_id=peer_id,
+            sender_id=sender_id,
+            agent_id=agent_id,
+        )
         await self._session_store.save(session)
-        await self._session_store.set_active(self._peer_key(message), session.session_id)
+        await self._session_store.set_active(peer_key, session.session_id)
         return session
 
     async def get_session_by_id(self, session_id: str) -> Session | None:
