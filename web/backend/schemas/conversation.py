@@ -29,6 +29,7 @@ class ConversationListItem(BaseModel):
     channel: str = ""
     summary: str | None = None
     message_count: int = 0
+    session_type: str | None = None  # "scheduled" | None
     created_at: str = ""
     updated_at: str = ""
 

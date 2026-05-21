@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from claw.agent_runtime.factory import AgentFactory
@@ -14,7 +16,8 @@ from claw.expert.store import SqliteExpertStore
 from claw.gateway import RuntimeGateway
 from claw.storage.session_store import SqliteSessionStore
 from claw.storage.sqlite import get_connection, init_db
-from web.backend.routers import agents, chat, conversations, experts
+from web.backend.routers import agents, chat, conversations, experts, tasks
+from web.backend.services.task_service import TaskService
 
 
 def create_app(
@@ -29,7 +32,7 @@ def create_app(
     gateway 为 None 时自动构建含 AgentResolver 的最小 Gateway。
     测试时可注入完整 Gateway（带真实或 mock Runner）。
     """
-    app = FastAPI(title="Mini Claw Web API", version="0.1.0")
+    app = FastAPI(title="Mini Claw Web API", version="0.1.0", lifespan=_make_lifespan())
 
     # 初始化 SQLite
     conn = get_connection(db_path)
@@ -57,6 +60,7 @@ def create_app(
     app.include_router(agents.router, prefix="/api/v1")
     app.include_router(conversations.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
+    app.include_router(tasks.router, prefix="/api/v1")
 
     # --- 统一在 _gateway 确定后创建 Web Channel 组件 ---
     from claw.channels.web.adapter import WebAdapter
@@ -78,9 +82,24 @@ def create_app(
     app.state.expert_store = _expert_store
     app.state.agent_store = _agent_store
 
+    # 构建定时任务管理服务（lifespan 负责启停）
+    _task_service = TaskService(gateway=_gateway)
+    app.state.task_service = _task_service
+
     _wire_deps(app, _gateway, _expert_store, _agent_store)
 
     return app
+
+
+def _make_lifespan():
+    """构建 FastAPI lifespan：启动/停止 TaskService（含 Scheduler）。"""
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        ts: TaskService = app.state.task_service
+        await ts.start()
+        yield
+        await ts.stop()
+    return lifespan
 
 
 def _build_default_gateway(
@@ -168,3 +187,5 @@ def _wire_deps(
     # 必须注入完整 Gateway 而非从 deps.py 默认构建（默认是 NoopRunner）
     app.dependency_overrides[conversations.get_gateway] = lambda: gateway
     app.dependency_overrides[chat.get_gateway] = lambda: gateway
+
+    # tasks 路由从 app.state 获取 TaskService，无需额外 override

@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mini Claw — 专家选择→创建对话→聊天 完整流程</title>
+<style>
+  :root { --blue: #2563eb; --green: #16a34a; --orange: #ea580c; --purple: #7c3aed; --gray: #6b7280; --bg: #f9fafb; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: #1f2937; line-height: 1.6; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+  h1 { font-size: 1.6rem; margin-bottom: 8px; }
+  .subtitle { color: var(--gray); font-size: 0.9rem; margin-bottom: 32px; }
+
+  /* ---- Phase ---- */
+  .phase { margin-bottom: 36px; }
+  .phase-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .phase-num { width: 32px; height: 32px; border-radius: 50%; color: #fff; font-weight: 700; font-size: 0.85rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .phase-title { font-size: 1.1rem; font-weight: 600; }
+
+  /* ---- Flow ---- */
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .step { display: flex; gap: 16px; position: relative; }
+  .step-line { width: 32px; display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+  .step-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 10px; flex-shrink: 0; }
+  .step-connector { width: 2px; flex: 1; min-height: 8px; }
+  .step-content { flex: 1; padding-bottom: 16px; }
+  .step-content .who { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .step-content .action { font-weight: 500; font-size: 0.92rem; }
+  .step-content .detail { font-size: 0.82rem; color: var(--gray); margin-top: 2px; }
+
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; margin-top: 8px; font-size: 0.82rem; }
+  .card code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; }
+  .card .file { color: var(--purple); font-weight: 500; }
+
+  /* Colors per layer */
+  .bg-frontend { background: var(--blue); }
+  .bg-api { background: var(--orange); }
+  .bg-gateway { background: var(--green); }
+  .bg-runner { background: var(--purple); }
+  .bg-store { background: var(--gray); }
+  .c-frontend { color: var(--blue); }
+  .c-api { color: var(--orange); }
+  .c-gateway { color: var(--green); }
+  .c-runner { color: var(--purple); }
+  .c-store { color: var(--gray); }
+  .dot-frontend { background: var(--blue); }
+  .dot-api { background: var(--orange); }
+  .dot-gateway { background: var(--green); }
+  .dot-runner { background: var(--purple); }
+  .dot-store { background: var(--gray); }
+  .conn-frontend { background: #bfdbfe; }
+  .conn-api { background: #fed7aa; }
+  .conn-gateway { background: #bbf7d0; }
+  .conn-runner { background: #ddd6fe; }
+  .conn-store { background: #d1d5db; }
+
+  /* Architecture diagram */
+  .arch { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px; margin-bottom: 36px; }
+  .arch-row { display: flex; gap: 12px; margin-bottom: 8px; align-items: stretch; }
+  .arch-box { border-radius: 8px; padding: 10px 14px; text-align: center; font-size: 0.82rem; font-weight: 500; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; }
+  .arch-arrow { text-align: center; color: var(--gray); font-size: 0.75rem; padding: 2px 0; }
+
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; font-size: 0.8rem; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Mini Claw — 专家→对话→聊天 完整流程</h1>
+<p class="subtitle">从用户选择专家创建对话，到发送消息接收流式回复的完整数据流分析</p>
+
+<!-- Architecture Overview -->
+<div class="arch">
+  <div style="font-weight:600; margin-bottom:12px; font-size:0.9rem;">整体架构</div>
+  <div class="arch-row">
+    <div class="arch-box" style="background:#dbeafe; color:var(--blue);">Frontend<br/><span style="font-size:0.7rem">React + Vite</span></div>
+    <div class="arch-box" style="width:24px; flex:none; background:none; color:var(--gray);">→</div>
+    <div class="arch-box" style="background:#ffedd5; color:var(--orange);">FastAPI Routers<br/><span style="font-size:0.7rem">REST + SSE</span></div>
+    <div class="arch-box" style="width:24px; flex:none; background:none; color:var(--gray);">→</div>
+    <div class="arch-box" style="background:#dcfce7; color:var(--green);">ChannelProcessor<br/><span style="font-size:0.7rem">去重/适配/校验</span></div>
+    <div class="arch-box" style="width:24px; flex:none; background:none; color:var(--gray);">→</div>
+    <div class="arch-box" style="background:#dcfce7; color:var(--green);">RuntimeGateway<br/><span style="font-size:0.7rem">会话/Agent/投递</span></div>
+    <div class="arch-box" style="width:24px; flex:none; background:none; color:var(--gray);">→</div>
+    <div class="arch-box" style="background:#ede9fe; color:var(--purple);">AgentRunner<br/><span style="font-size:0.7rem">DeepSeek + Tools</span></div>
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot dot-frontend"></div> Frontend</div>
+  <div class="legend-item"><div class="legend-dot dot-api"></div> API Router</div>
+  <div class="legend-item"><div class="legend-dot dot-gateway"></div> Gateway / Processor</div>
+  <div class="legend-item"><div class="legend-dot dot-runner"></div> AgentRunner</div>
+  <div class="legend-item"><div class="legend-dot dot-store"></div> Store (SQLite)</div>
+</div>
+
+<!-- ==================== Phase 1 ==================== -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num bg-frontend">1</div>
+    <div class="phase-title">浏览专家列表</div>
+  </div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ExpertMarketplace.tsx</div>
+        <div class="action">组件挂载时请求专家列表</div>
+        <div class="card">
+          <code>GET /api/v1/experts</code>
+          <br/><span class="file">web/backend/routers/experts.py</span> → ExpertService.list_experts() → SqliteExpertStore.list_all()
+          <br/>返回 bundled 专家列表（name, display_name, description, meta）
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ExpertMarketplace.tsx</div>
+        <div class="action">同时请求已有 Agent 列表</div>
+        <div class="card">
+          <code>GET /api/v1/agents</code>
+          <br/><span class="file">web/backend/routers/agents.py</span> → SqliteAgentStore.list_all()
+          <br/>用于判断专家是否已安装（能否直接创建对话）
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Phase 2 ==================== -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num bg-api">2</div>
+    <div class="phase-title">安装专家（如果未安装）</div>
+  </div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ExpertMarketplace.tsx</div>
+        <div class="action">用户点击"安装"按钮</div>
+        <div class="card">
+          <code>POST /api/v1/experts/:name/install</code>
+          <br/><span class="file">web/backend/routers/experts.py</span> → ExpertService.install_bundled(name)
+          <br/>从 bundled 目录加载专家配置，写入 SQLite expert 表
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Phase 3 ==================== -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num bg-api">3</div>
+    <div class="phase-title">创建 Agent + 创建对话</div>
+  </div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ExpertMarketplace.tsx</div>
+        <div class="action">用户点击"创建对话"按钮</div>
+        <div class="detail">handleCreateAgent(expertName) 被调用</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-api"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend</div>
+        <div class="action">检查是否已有该专家的 Agent</div>
+        <div class="card">
+          <code>agents.find(a => a.source_expert === expertName)</code>
+          <br/>有 → 跳过创建，直接用已有 agent.id
+          <br/>无 → 调用 <code>POST /api/v1/agents</code>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-api"></div><div class="step-connector conn-api"></div></div>
+      <div class="step-content">
+        <div class="who c-api">API — agents.py</div>
+        <div class="action">创建 Agent（如果需要）</div>
+        <div class="card">
+          <code>POST /api/v1/agents</code> body: <code>{"expert_name": "code-helper"}</code>
+          <br/><span class="file">web/backend/routers/agents.py</span> → AgentFactory.create_from_expert()
+          <br/><span class="file">claw/agent_runtime/factory.py</span>
+          <br/>从 Expert 模板复制 system_prompt、enabled_tools、enabled_skills
+          <br/>写入 SqliteAgentStore，返回 AgentConfig（含 agent.id）
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-api"></div><div class="step-connector conn-api"></div></div>
+      <div class="step-content">
+        <div class="who c-api">API — conversations.py</div>
+        <div class="action">创建对话（绑定 agent_id）</div>
+        <div class="card">
+          <code>POST /api/v1/conversations</code> body: <code>{"agent_id": "ag_xxx"}</code>
+          <br/><span class="file">web/backend/routers/conversations.py</span>
+          <br/>→ Gateway.create_session_for_agent(WEB_PEER_KEY, agent_id, channel=..., ...)
+          <br/>→ <span class="file">claw/session.py</span> create_session_from_identity() 生成 Session
+          <br/>→ SqliteSessionStore.save() 持久化
+          <br/>→ set_active() 设为活跃
+          <br/>返回 <code>{"session_id": "sess_xxx", "agent_id": "ag_xxx"}</code>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend</div>
+        <div class="action">导航到聊天页面</div>
+        <div class="card">
+          <code>navigate(`/conversations/${conv.session_id}`)</code>
+          <br/>React Router 渲染 ChatWindow 组件，传入 sessionId
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Phase 4 ==================== -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num bg-gateway">4</div>
+    <div class="phase-title">加载对话历史</div>
+  </div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ChatWindow.tsx</div>
+        <div class="action">组件挂载，加载历史消息</div>
+        <div class="card">
+          <code>GET /api/v1/conversations/:session_id</code>
+          <br/><span class="file">web/backend/routers/conversations.py</span> → Gateway.get_session_by_id()
+          <br/>→ SqliteSessionStore.get_by_id() 含完整 history
+          <br/>返回 <code>{"session_id", "agent_id", "messages": [{role, content}, ...]}</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Phase 5 ==================== -->
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num bg-runner">5</div>
+    <div class="phase-title">发送消息 → 流式回复（核心流程）</div>
+  </div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-frontend"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ChatWindow.tsx</div>
+        <div class="action">用户输入消息，点击发送</div>
+        <div class="detail">handleSend() 被调用：清空输入框、添加用户消息到列表、设置 streaming=true</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector conn-api"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — api/client.ts</div>
+        <div class="action">发起 SSE 流式请求</div>
+        <div class="card">
+          <code>POST /api/v1/chat/stream</code>
+          <br/>body: <code>{"session_id": "sess_xxx", "text": "用户消息"}</code>
+          <br/>使用 fetch + ReadableStream 读取 SSE 事件流
+          <br/><span class="file">web/frontend/src/api/client.ts</span> streamChat()
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-api"></div><div class="step-connector conn-gateway"></div></div>
+      <div class="step-content">
+        <div class="who c-api">API — chat.py</div>
+        <div class="action">接收请求，转为 PlatformEvent</div>
+        <div class="card">
+          <span class="file">web/backend/routers/chat.py</span>
+          <br/>WebTransport.receive(text, session_id) → PlatformEvent
+          <br/>ChannelProcessor.process_stream(event) → AsyncIterator&lt;StreamChunk&gt;
+          <br/>SseEncoder 逐个编码 chunk 为 SSE 格式返回
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-gateway"></div><div class="step-connector conn-gateway"></div></div>
+      <div class="step-content">
+        <div class="who c-gateway">ChannelProcessor</div>
+        <div class="action">去重 → 适配 → 校验 → 过滤 → 转发 Gateway</div>
+        <div class="card">
+          <span class="file">claw/processor.py</span> process_stream()
+          <br/>1. 去重：InMemoryDedupeStore 检查 event_id
+          <br/>2. 适配：WebAdapter.to_inbound_message(event) → InboundMessage
+          <br/>3. 补充元数据：transport / event_id / received_at
+          <br/>4. 校验：channel / account_id / peer_id / sender_id / message_id 非空
+          <br/>5. 过滤：bot 消息、系统事件跳过
+          <br/>6. 转发：Gateway.handle_stream(inbound)
+          <br/>错误策略：ErrorPolicy.RAISE（向上抛异常，Router 外层 catch 并 encode_error）
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-gateway"></div><div class="step-connector conn-gateway"></div></div>
+      <div class="step-content">
+        <div class="who c-gateway">RuntimeGateway</div>
+        <div class="action">解析 Session + 注入 Agent 配置</div>
+        <div class="card">
+          <span class="file">claw/gateway.py</span> handle_stream()
+          <br/>1. <b>_resolve_session(message)</b>：从 metadata["session_id"] 找到 Session
+          <br/>2. <b>_auto_compress_if_needed</b>：检查 token 是否超限，超过则自动压缩
+          <br/>3. <b>_inject_agent_runtime_profile(session)</b>：AgentResolver 按 session.agent_id 解析运行配置
+          <br/>&nbsp;&nbsp;→ 从 SqliteAgentStore 加载 AgentConfig
+          <br/>&nbsp;&nbsp;→ 转为 RuntimeProfile（system_prompt, model_config, enabled_tools/skills）
+          <br/>&nbsp;&nbsp;→ 写入 session.metadata["agent_runtime_profile"]
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-runner"></div><div class="step-connector conn-runner"></div></div>
+      <div class="step-content">
+        <div class="who c-runner">ContextBuildingAgentRunner（wrapper）</div>
+        <div class="action">注入运行时上下文（memory + skills）</div>
+        <div class="card">
+          <span class="file">claw/agent_runtime/wrapper.py</span>
+          <br/>RuntimeContextBuilder.build(session, message)
+          <br/>1. <b>_inject_memory_context</b>：MemoryManager 构建记忆上下文 → session.metadata["memory_context"]
+          <br/>2. <b>_inject_skill_context</b>：SkillsRegistry 构建技能索引 → session.metadata["skills_listing"]
+          <br/>&nbsp;&nbsp;（仅 Layer 1 轻量索引，完整指令由 LLM 通过 load_skill 工具按需加载）
+          <br/>→ 委托 inner runner (DeepSeekAgentRunner) 执行
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-runner"></div><div class="step-connector conn-runner"></div></div>
+      <div class="step-content">
+        <div class="who c-runner">DeepSeekAgentRunner</div>
+        <div class="action">构建 LLM messages → 调用 DeepSeek API → yield StreamChunk</div>
+        <div class="card">
+          <span class="file">claw/deepseek.py</span> run_stream()
+          <br/>1. <b>_build_messages(session)</b>：
+          <br/>&nbsp;&nbsp;• system: summary → memory_context → skills_listing → agent profile
+          <br/>&nbsp;&nbsp;• history: session.history 中的 user/assistant/tool 消息
+          <br/>2. <b>调用 DeepSeek API</b>（OpenAI 兼容接口，stream=True）
+          <br/>3. <b>工具调用循环</b>：
+          <br/>&nbsp;&nbsp;• LLM 返回 tool_call → 执行工具 → tool_result 追加 → 继续调用
+          <br/>&nbsp;&nbsp;• 直到 LLM 返回纯文本内容
+          <br/>4. 逐 token yield StreamChunk(type="content"|"thinking"|"tool_call"|"tool_result")
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-gateway"></div><div class="step-connector conn-gateway"></div></div>
+      <div class="step-content">
+        <div class="who c-gateway">RuntimeGateway</div>
+        <div class="action">流结束后：保存 history + 更新 memory</div>
+        <div class="card">
+          <span class="file">claw/gateway.py</span> handle_stream() 后半段
+          <br/>1. 聚合 full_text + full_thinking
+          <br/>2. session.history.append(ChatMessage(role="assistant", content=full_text))
+          <br/>3. _maybe_update_daily_memory(session) — 按策略更新 daily memory
+          <br/>4. session_store.save() — 增量追加新消息到 SQLite
+          <br/>5. delivery.send() — Web 端是 NoopDelivery（SSE 已直接返回）
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-api"></div><div class="step-connector conn-api"></div></div>
+      <div class="step-content">
+        <div class="who c-api">API — chat.py</div>
+        <div class="action">SSE 编码返回</div>
+        <div class="card">
+          <span class="file">claw/channels/web/delivery.py</span> SseEncoder
+          <br/>每个 StreamChunk → <code>{"data": "{\"type\":\"content\",\"text\":\"...\"}"}</code>
+          <br/>结束标记 → <code>{"data": "[DONE]"}</code>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-line"><div class="step-dot dot-frontend"></div><div class="step-connector" style="background:transparent"></div></div>
+      <div class="step-content">
+        <div class="who c-frontend">Frontend — ChatWindow.tsx</div>
+        <div class="action">逐 chunk 更新 UI</div>
+        <div class="card">
+          for await (const chunk of streamChat(...))
+          <br/>• content → full += chunk.text → setStreamText(full)
+          <br/>• error → full += "[错误] " + chunk.text
+          <br/>流结束后：写入 messages 数组，streaming=false
+          <br/><b>视觉反馈</b>：发送按钮旋转 SVG → "思考中..." 三点动画 → 流式气泡 + 闪烁光标 ▌
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Summary ==================== -->
+<div style="background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-top:12px;">
+  <div style="font-weight:600; margin-bottom:12px; font-size:0.95rem;">API 调用时序汇总</div>
+  <table style="width:100%; font-size:0.82rem; border-collapse:collapse;">
+    <tr style="border-bottom:1px solid #e5e7eb;">
+      <th style="text-align:left; padding:6px 12px;">步骤</th>
+      <th style="text-align:left; padding:6px 12px;">API</th>
+      <th style="text-align:left; padding:6px 12px;">核心模块</th>
+    </tr>
+    <tr style="border-bottom:1px solid #f3f4f6;">
+      <td style="padding:6px 12px;">1. 浏览专家</td>
+      <td style="padding:6px 12px;"><code>GET /api/v1/experts</code></td>
+      <td style="padding:6px 12px;">ExpertService → SqliteExpertStore</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f3f4f6;">
+      <td style="padding:6px 12px;">2. 安装专家</td>
+      <td style="padding:6px 12px;"><code>POST /api/v1/experts/:name/install</code></td>
+      <td style="padding:6px 12px;">ExpertService.install_bundled()</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f3f4f6;">
+      <td style="padding:6px 12px;">3. 创建 Agent</td>
+      <td style="padding:6px 12px;"><code>POST /api/v1/agents</code></td>
+      <td style="padding:6px 12px;">AgentFactory.create_from_expert() → SqliteAgentStore</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f3f4f6;">
+      <td style="padding:6px 12px;">4. 创建对话</td>
+      <td style="padding:6px 12px;"><code>POST /api/v1/conversations</code></td>
+      <td style="padding:6px 12px;">Gateway.create_session_for_agent() → SqliteSessionStore</td>
+    </tr>
+    <tr style="border-bottom:1px solid #f3f4f6;">
+      <td style="padding:6px 12px;">5. 加载历史</td>
+      <td style="padding:6px 12px;"><code>GET /api/v1/conversations/:id</code></td>
+      <td style="padding:6px 12px;">Gateway.get_session_by_id() → SqliteSessionStore</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;">6. 聊天（SSE）</td>
+      <td style="padding:6px 12px;"><code>POST /api/v1/chat/stream</code></td>
+      <td style="padding:6px 12px;">WebTransport → Processor → Gateway → ContextBuilder → DeepSeekRunner</td>
+    </tr>
+  </table>
+</div>
+
+</div>
+</body>
+</html>

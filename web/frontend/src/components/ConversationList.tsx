@@ -41,6 +41,10 @@ export default function ConversationList({ onSelect, onConversationCreated }: Pr
   // 排除 default-agent，只展示已安装的专家 Agent
   const installedAgents = agents.filter(a => a.id !== 'default-agent');
 
+  // 按会话类型分组
+  const normalConvs = conversations.filter(c => c.session_type !== 'scheduled');
+  const scheduledConvs = conversations.filter(c => c.session_type === 'scheduled');
+
   if (loading) return <div className="p-6 text-gray-500">加载中...</div>;
 
   return (
@@ -78,29 +82,63 @@ export default function ConversationList({ onSelect, onConversationCreated }: Pr
           <p className="text-sm">点击"新对话"或从专家广场创建</p>
         </div>
       ) : (
-        <div className="space-y-2">
-          {conversations.map(conv => (
-            <div
-              key={conv.session_id}
-              onClick={() => onSelect(conv)}
-              className="bg-white rounded-lg border p-4 hover:bg-blue-50 cursor-pointer transition-colors flex items-center justify-between"
-            >
-              <div className="min-w-0">
-                <p className="font-medium text-gray-800 truncate">
-                  {conv.summary || `对话 ${conv.session_id.slice(0, 12)}...`}
-                </p>
-                <p className="text-sm text-gray-500">
-                  {getAgentName(conv.agent_id)} · {conv.message_count} 条消息
-                </p>
+        <div className="space-y-6">
+          {/* 普通对话 */}
+          {normalConvs.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-500 mb-2">对话</h3>
+              <div className="space-y-2">
+                {normalConvs.map(conv => (
+                  <div
+                    key={conv.session_id}
+                    onClick={() => onSelect(conv)}
+                    className="bg-white rounded-lg border p-4 hover:bg-blue-50 cursor-pointer transition-colors flex items-center justify-between"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-800 truncate">
+                        {conv.summary || `对话 ${conv.session_id.slice(0, 12)}...`}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        {getAgentName(conv.agent_id)} · {conv.message_count} 条消息
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => handleDelete(conv.session_id, e)}
+                      className="text-gray-300 hover:text-red-500 ml-2"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
               </div>
-              <button
-                onClick={(e) => handleDelete(conv.session_id, e)}
-                className="text-gray-300 hover:text-red-500 ml-2"
-              >
-                ✕
-              </button>
             </div>
-          ))}
+          )}
+
+          {/* 定时推送 */}
+          {scheduledConvs.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-500 mb-2">定时推送</h3>
+              <div className="space-y-2">
+                {scheduledConvs.map(conv => (
+                  <div
+                    key={conv.session_id}
+                    onClick={() => onSelect(conv)}
+                    className="bg-amber-50 rounded-lg border border-amber-200 p-4 hover:bg-amber-100 cursor-pointer transition-colors flex items-center justify-between"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-800 truncate">
+                        {conv.summary || `推送 ${conv.session_id.slice(0, 12)}...`}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        {getAgentName(conv.agent_id)} · {conv.message_count} 条消息
+                      </p>
+                    </div>
+                    <span className="text-xs text-amber-500 shrink-0">定时推送</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

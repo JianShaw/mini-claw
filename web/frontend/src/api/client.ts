@@ -45,6 +45,7 @@ export interface ConversationListItem {
   agent_id: string;
   summary: string | null;
   message_count: number;
+  session_type?: string | null;
 }
 
 export interface Message {
@@ -93,8 +94,9 @@ export async function createConversation(agentId: string): Promise<Conversation>
   return resp.json();
 }
 
-export async function fetchConversations(): Promise<ConversationListItem[]> {
-  return dedupedFetch<ConversationListItem[]>(`${API_BASE}/conversations`);
+export async function fetchConversations(type?: string): Promise<ConversationListItem[]> {
+  const params = type ? `?type=${type}` : '';
+  return dedupedFetch<ConversationListItem[]>(`${API_BASE}/conversations${params}`);
 }
 
 export async function deleteConversation(sessionId: string): Promise<void> {
@@ -135,4 +137,117 @@ export async function* streamChat(sessionId: string, text: string) {
       } catch { /* skip malformed */ }
     }
   }
+}
+
+// ---- Scheduled Tasks ----
+
+export interface TriggerConfig {
+  type: 'cron' | 'interval';
+  expression?: string;
+  seconds?: number;
+}
+
+export interface ScheduledTask {
+  name: string;
+  description: string;
+  trigger: TriggerConfig;
+  task_type: 'llm' | 'system';
+  enabled: boolean;
+  peer_key: string | null;
+  prompt: string | null;
+  agent_id: string | null;
+  session_id: string | null;
+  is_running: boolean;
+  last_success: boolean | null;
+  last_message: string;
+  last_error: string | null;
+}
+
+export interface TaskDetail extends ScheduledTask {
+  history: TaskRunRecord[];
+}
+
+export interface TaskRunRecord {
+  task_name: string;
+  triggered_at: string;
+  completed_at: string;
+  success: boolean;
+  task_type: string;
+  message: string;
+  error: string | null;
+}
+
+export interface CreateTaskRequest {
+  name: string;
+  description?: string;
+  trigger: TriggerConfig;
+  agent_id: string;
+  prompt: string;
+  enabled?: boolean;
+}
+
+export interface UpdateTaskRequest {
+  description?: string;
+  trigger?: TriggerConfig;
+  prompt?: string;
+  enabled?: boolean;
+}
+
+export interface TriggerResult {
+  success: boolean;
+  message: string;
+  error: string | null;
+}
+
+export async function fetchTasks(): Promise<ScheduledTask[]> {
+  return dedupedFetch<ScheduledTask[]>(`${API_BASE}/tasks`);
+}
+
+export async function fetchTask(name: string): Promise<TaskDetail> {
+  const resp = await fetch(`${API_BASE}/tasks/${encodeURIComponent(name)}`);
+  return resp.json();
+}
+
+export async function createTask(req: CreateTaskRequest): Promise<ScheduledTask> {
+  const resp = await fetch(`${API_BASE}/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return resp.json();
+}
+
+export async function updateTask(name: string, req: UpdateTaskRequest): Promise<ScheduledTask> {
+  const resp = await fetch(`${API_BASE}/tasks/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return resp.json();
+}
+
+export async function toggleTask(name: string, enabled: boolean): Promise<ScheduledTask> {
+  const resp = await fetch(`${API_BASE}/tasks/${encodeURIComponent(name)}/toggle`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  return resp.json();
+}
+
+export async function triggerTask(name: string): Promise<TriggerResult> {
+  const resp = await fetch(`${API_BASE}/tasks/${encodeURIComponent(name)}/trigger`, {
+    method: 'POST',
+  });
+  return resp.json();
+}
+
+export async function fetchTaskHistory(name: string, limit = 20): Promise<TaskRunRecord[]> {
+  return dedupedFetch<TaskRunRecord[]>(
+    `${API_BASE}/tasks/${encodeURIComponent(name)}/history?limit=${limit}`
+  );
+}
+
+export async function deleteTask(name: string): Promise<void> {
+  await fetch(`${API_BASE}/tasks/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }

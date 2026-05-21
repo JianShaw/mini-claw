@@ -28,17 +28,20 @@
       "enabled": true,
       "description": "空闲10分钟自动compact"
     },
-    "push_current_time": {
+    "test_task": {
       "trigger": {
         "type": "interval",
         "seconds": 60
       },
       "handler": null,
-      "enabled": true,
-      "description": "每1分钟推送当前时间给用户",
-      "params": {},
-      "peer_key": "local:local-app:local-user",
-      "prompt": "请获取当前时间并以友好的格式推送给用户，格式如：\"当前时间：2026-05-18 16:00:00\""
+      "enabled": false,
+      "description": "test",
+      "params": {
+        "session_id": "sess_b526ba6a0c7049f58adc391b0b38822a",
+        "agent_id": "ag_default"
+      },
+      "peer_key": "web:default:sched:test_task",
+      "prompt": "请告诉我几点了"
     }
   }
 }

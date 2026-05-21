@@ -74,6 +74,12 @@ async def trigger_llm_task(
         )
 
     parts = peer_key.split(":", 2)
+    # 携带 session_id 以精确路由到定时推送 session，避免 gateway 创建新 session
+    metadata: dict[str, Any] = {"scheduled": True, "task_name": name}
+    session_id = definition.params.get("session_id")
+    if session_id:
+        metadata["session_id"] = session_id
+
     msg = InboundMessage(
         channel=parts[0] if len(parts) > 0 else "local",
         account_id=parts[1] if len(parts) > 1 else "app",
@@ -84,7 +90,7 @@ async def trigger_llm_task(
         timestamp=int(time.time() * 1000),
         message_type="text",
         raw=None,
-        metadata={"scheduled": True, "task_name": name},
+        metadata=metadata,
     )
 
     logger.info("LLM task '%s' dispatching to %s", name, peer_key)

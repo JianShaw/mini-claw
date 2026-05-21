@@ -3,6 +3,7 @@ import { useState } from 'react';
 import ExpertMarketplace from './components/ExpertMarketplace';
 import ConversationList from './components/ConversationList';
 import ChatWindow from './components/ChatWindow';
+import TaskManager from './components/TaskManager';
 import type { Agent } from './api/client';
 
 export default function App() {
@@ -31,6 +32,14 @@ export default function App() {
             >
               专家广场
             </NavLink>
+            <NavLink
+              to="/tasks"
+              className={({ isActive }) =>
+                `block px-3 py-2 rounded-lg mb-1 ${isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`
+              }
+            >
+              定时任务
+            </NavLink>
           </nav>
         </div>
 
@@ -39,6 +48,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/conversations" replace />} />
             <Route path="/experts" element={<ExpertMarketplace />} />
+            <Route path="/tasks" element={<TaskManager />} />
             <Route path="/conversations" element={<ConversationListWithNav />} />
             <Route path="/conversations/:sessionId" element={<ChatWindowWithNav />} />
           </Routes>
