@@ -91,6 +91,7 @@ class MiniClaw:
             skills_registry=skills_registry,
         )
         wrapped_runner = ContextBuildingAgentRunner(runner, context_builder)
+        self._wrapped_runner: ContextBuildingAgentRunner = wrapped_runner
 
         self.gateway = RuntimeGateway(
             session_store=self._session_store,
@@ -242,6 +243,7 @@ class MiniClaw:
         if self._schedule_config_path:
             try:
                 from claw.scheduler import TaskScheduler
+                from claw.scheduler.agent_run import AgentRunService
                 from claw.scheduler.config import ScheduleConfigLoader
                 from claw.scheduler.context import TaskContext
                 from claw.scheduler.history import TaskRunHistory
@@ -252,8 +254,15 @@ class MiniClaw:
                     _gateway=self.gateway,
                 )
                 history = TaskRunHistory()
+                agent_run_service = AgentRunService(
+                    agent_runner=self._wrapped_runner,
+                    session_store=self._session_store,
+                    memory_manager=self._memory_manager,
+                    compressor=self.gateway.compressor,
+                    agent_resolver=self.gateway.agent_resolver,
+                )
                 self._scheduler = TaskScheduler(
-                    gateway=self.gateway,
+                    agent_run_service=agent_run_service,
                     context=context,
                     history=history,
                 )

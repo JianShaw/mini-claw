@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from claw.scheduler import (
+    AgentRunService,
     EventTrigger,
     IntervalTrigger,
     TaskContext,
@@ -36,20 +37,22 @@ def _mock_context() -> TaskContext:
     )
 
 
-def _mock_gateway() -> AsyncMock:
-    """构造一个 mock gateway，handle_inbound_message 返回 AgentReply。"""
-    gw = AsyncMock()
-    gw.handle_inbound_message = AsyncMock(return_value=AgentReply(text="ok"))
-    return gw
+def _mock_agent_run_service() -> AsyncMock:
+    """构造一个 mock AgentRunService。"""
+    svc = AsyncMock(spec=AgentRunService)
+    svc.execute = AsyncMock(return_value=AgentReply(text="ok"))
+    return svc
 
 
 def _mock_scheduler(**kwargs: Any) -> tuple[TaskScheduler, AsyncMock, TaskContext]:
-    """构造 scheduler + mock gateway + mock context。"""
-    gw = _mock_gateway()
+    """构造 scheduler + mock agent_run_service + mock context。"""
+    svc = _mock_agent_run_service()
     ctx = _mock_context()
     history = kwargs.pop("history", None) or TaskRunHistory()
-    scheduler = TaskScheduler(gateway=gw, context=ctx, history=history, **kwargs)
-    return scheduler, gw, ctx
+    scheduler = TaskScheduler(
+        agent_run_service=svc, context=ctx, history=history, **kwargs,
+    )
+    return scheduler, svc, ctx
 
 
 async def _counting_handler(ctx: TaskContext, **params: Any) -> TaskResult:
@@ -412,26 +415,24 @@ async def test_emit_retains_last_10_payloads() -> None:
 # --- LLM 任务模式 ---
 
 
-async def test_llm_task_sends_inbound_message() -> None:
-    """LLM 任务触发时构建 InboundMessage 并走 gateway。"""
-    scheduler, gw, _ = _mock_scheduler()
+async def test_llm_task_uses_agent_run_service() -> None:
+    """LLM 任务触发时通过 AgentRunService.execute 执行。"""
+    scheduler, svc, _ = _mock_scheduler()
     scheduler.register(TaskDefinition(
         name="remind",
         trigger=IntervalTrigger(seconds=3600),
         peer_key="local:app:user",
         prompt="提醒喝水",
+        params={"session_id": "sess_123", "agent_id": "ag_default"},
     ))
     result = await scheduler.run_now("remind")
     assert result.success
-    gw.handle_inbound_message.assert_awaited_once()
-    msg = gw.handle_inbound_message.await_args.args[0]
-    assert msg.text == "提醒喝水"
-    assert msg.sender_id == "scheduler"
-    assert msg.metadata["scheduled"] is True
-    assert msg.metadata["task_name"] == "remind"
-    assert msg.channel == "local"
-    assert msg.account_id == "app"
-    assert msg.peer_id == "user"
+    svc.execute.assert_awaited_once()
+    run = svc.execute.await_args.args[0]
+    assert run.prompt == "提醒喝水"
+    assert run.task_name == "remind"
+    assert run.session_id == "sess_123"
+    assert run.peer_key == "local:app:user"
 
 
 async def test_llm_task_no_handler_stored() -> None:
@@ -460,10 +461,10 @@ async def test_llm_task_list_tasks_shows_llm_type() -> None:
     assert statuses[0]["task_type"] == "llm"
 
 
-async def test_llm_task_gateway_failure() -> None:
-    """gateway 抛异常时 LLM 任务返回失败。"""
-    scheduler, gw, _ = _mock_scheduler()
-    gw.handle_inbound_message = AsyncMock(side_effect=RuntimeError("timeout"))
+async def test_llm_task_service_failure() -> None:
+    """AgentRunService 抛异常时 LLM 任务返回失败。"""
+    scheduler, svc, _ = _mock_scheduler()
+    svc.execute = AsyncMock(side_effect=RuntimeError("timeout"))
     scheduler.register(TaskDefinition(
         name="remind",
         trigger=IntervalTrigger(seconds=3600),
@@ -512,7 +513,7 @@ async def test_system_task_records_history(tmp_path: Any) -> None:
 async def test_llm_task_records_history(tmp_path: Any) -> None:
     """LLM 任务执行后记录到 run history。"""
     history = TaskRunHistory(path=tmp_path / "history.jsonl")
-    scheduler, gw, _ = _mock_scheduler(history=history)
+    scheduler, svc, _ = _mock_scheduler(history=history)
     scheduler.register(TaskDefinition(
         name="remind",
         trigger=IntervalTrigger(seconds=3600),

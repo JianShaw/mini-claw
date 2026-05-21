@@ -9,6 +9,7 @@ import pytest
 
 from claw.channels.web.adapter import WEB_ACCOUNT_ID, WEB_CHANNEL, WEB_SENDER_ID
 from claw.session import build_peer_key
+from claw.scheduler.agent_run import AgentRunService
 from claw.scheduler.types import (
     CronTrigger,
     EventTrigger,
@@ -33,33 +34,32 @@ def history_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def mock_gateway() -> AsyncMock:
-    gw = AsyncMock()
-    gw.handle_inbound_message = AsyncMock(return_value=AgentReply(text="ok"))
-    # create_session_for_agent 返回一个模拟 session
-    gw.create_session_for_agent = AsyncMock(
-        side_effect=lambda peer_key, agent_id, **kw: Session(
-            session_id="sess_test123",
-            session_key=peer_key,
-            channel=kw["channel"],
-            account_id=kw["account_id"],
-            peer_id=kw["peer_id"],
-            sender_id=kw["sender_id"],
-            agent_id=agent_id,
-        )
-    )
-    gw._session_store = AsyncMock()
-    gw._session_store.save = AsyncMock()
-    gw.delete_session = AsyncMock()
-    return gw
+def mock_session_store() -> AsyncMock:
+    """Mock SessionStore：record 保存的 session 供后续断言。"""
+    store = AsyncMock()
+    store.save = AsyncMock()
+    store.set_active = AsyncMock()
+    store.delete = AsyncMock()
+    return store
+
+
+@pytest.fixture
+def mock_agent_run_service() -> AsyncMock:
+    svc = AsyncMock(spec=AgentRunService)
+    svc.execute = AsyncMock(return_value=AgentReply(text="定时推送完成"))
+    return svc
 
 
 @pytest.fixture
 def task_service(
-    mock_gateway: AsyncMock, config_path: Path, history_path: Path
+    mock_session_store: AsyncMock,
+    mock_agent_run_service: AsyncMock,
+    config_path: Path,
+    history_path: Path,
 ) -> TaskService:
     return TaskService(
-        gateway=mock_gateway,
+        session_store=mock_session_store,
+        agent_run_service=mock_agent_run_service,
         config_path=str(config_path),
         history_path=str(history_path),
     )
@@ -101,9 +101,9 @@ async def test_stop_clears_definitions(task_service: TaskService) -> None:
 
 
 async def test_create_task_creates_session(
-    task_service: TaskService, mock_gateway: AsyncMock, config_path: Path
+    task_service: TaskService, mock_session_store: AsyncMock, config_path: Path
 ) -> None:
-    """创建任务时自动创建 session，peer_key 从 session 中提取。"""
+    """创建任务时直接通过 SessionStore 创建 session。"""
     await task_service.start()
 
     view = await task_service.create_task(
@@ -117,20 +117,22 @@ async def test_create_task_creates_session(
     assert view["name"] == "morning_greet"
     assert view["task_type"] == "llm"
     assert view["agent_id"] == "ag_test"
-    assert view["session_id"] == "sess_test123"
+    assert view["session_id"] is not None
     assert view["peer_key"] is not None
 
-    # 验证 create_session_for_agent 被调用
-    mock_gateway.create_session_for_agent.assert_called_once()
-    call_kwargs = mock_gateway.create_session_for_agent.call_args
-    assert call_kwargs[1]["channel"] == WEB_CHANNEL
-    assert call_kwargs[1]["account_id"] == WEB_ACCOUNT_ID
+    # 验证 session_store.save 和 set_active 被调用
+    mock_session_store.save.assert_called_once()
+    mock_session_store.set_active.assert_called_once()
+
+    # 验证 peer_key 包含 sched 前缀
+    set_active_call = mock_session_store.set_active.call_args
+    assert set_active_call[0][0] == view["peer_key"]
 
     await task_service.stop()
 
 
 async def test_create_task_marks_session_type(
-    task_service: TaskService, mock_gateway: AsyncMock
+    task_service: TaskService, mock_session_store: AsyncMock
 ) -> None:
     """session 的 metadata 应标记 session_type="scheduled"。"""
     await task_service.start()
@@ -143,8 +145,8 @@ async def test_create_task_marks_session_type(
     )
 
     # session_store.save 应被调用，且 session 带 scheduled 标记
-    mock_gateway._session_store.save.assert_called()
-    saved_session = mock_gateway._session_store.save.call_args[0][0]
+    mock_session_store.save.assert_called()
+    saved_session = mock_session_store.save.call_args[0][0]
     assert saved_session.metadata["session_type"] == "scheduled"
     assert saved_session.metadata["task_name"] == "test_task"
 
@@ -168,7 +170,7 @@ async def test_create_task_duplicate_name(task_service: TaskService) -> None:
 
 
 async def test_update_llm_task(
-    task_service: TaskService, mock_gateway: AsyncMock, config_path: Path
+    task_service: TaskService, mock_session_store: AsyncMock, config_path: Path
 ) -> None:
     await task_service.start()
     await task_service.create_task(
@@ -211,7 +213,7 @@ async def test_update_system_task_rejected(task_service: TaskService) -> None:
 
 
 async def test_toggle_task(
-    task_service: TaskService, mock_gateway: AsyncMock, config_path: Path
+    task_service: TaskService, mock_session_store: AsyncMock, config_path: Path
 ) -> None:
     await task_service.start()
     await task_service.create_task(
@@ -229,7 +231,7 @@ async def test_toggle_task(
 # ---- trigger_task ----
 
 
-async def test_trigger_task(task_service: TaskService, mock_gateway: AsyncMock) -> None:
+async def test_trigger_task(task_service: TaskService, mock_session_store: AsyncMock) -> None:
     await task_service.start()
     await task_service.create_task(
         name="test_task",
@@ -272,7 +274,7 @@ async def test_list_tasks_with_event_trigger(task_service: TaskService) -> None:
 
 
 async def test_delete_task(
-    task_service: TaskService, mock_gateway: AsyncMock, config_path: Path
+    task_service: TaskService, mock_session_store: AsyncMock, config_path: Path
 ) -> None:
     """删除任务时同时清理关联 session。"""
     await task_service.start()
@@ -287,7 +289,7 @@ async def test_delete_task(
     assert task_service.get_task("test_task") is None
 
     # 验证 session 被清理
-    mock_gateway.delete_session.assert_called_once()
+    mock_session_store.delete.assert_called_once()
 
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert "test_task" not in data["tasks"]

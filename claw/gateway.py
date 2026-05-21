@@ -38,6 +38,28 @@ class RuntimeGateway:
         self._memory_manager = memory_manager
         self._agent_resolver = agent_resolver
 
+    # -- 只读属性：暴露内部组件供 AgentRunService 等外部模块复用 --
+
+    @property
+    def agent_runner(self) -> AgentRunner:
+        return self._agent_runner
+
+    @property
+    def session_store(self) -> SessionStore:
+        return self._session_store
+
+    @property
+    def memory_manager(self) -> Any | None:
+        return self._memory_manager
+
+    @property
+    def compressor(self) -> ContextCompressor | None:
+        return self._compressor
+
+    @property
+    def agent_resolver(self) -> Any | None:
+        return self._agent_resolver
+
     def _peer_key(self, message: InboundMessage) -> str:
         return build_peer_key(message.channel, message.account_id, message.peer_id)
 

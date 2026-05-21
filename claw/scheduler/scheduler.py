@@ -1,14 +1,14 @@
 """TaskScheduler：单 dispatcher + worker pool 的 asyncio 定时任务调度器。
 
 架构：
-  - 一个 _dispatcher_task 负责计算到期任务并放入队列
-  - max_workers 个 _worker_loop 从队列取出任务执行
+  - 一个 _dispatcher_task 负责计算到期任务并放入队列（CronScheduler）
+  - max_workers 个 _worker_loop 从队列取出任务执行（TaskQueue）
   - _active_jobs 防止同一任务并发执行
   - _wake_event 用于中断 dispatcher 的睡眠
 
-两种执行模式：
-  - LLM 任务（peer_key + prompt）：触发时构建 InboundMessage → gateway 全链路
-  - 系统任务（handler）：触发时直接调用 handler（用于内存维护、compact 等）
+执行委托给 TaskRunner：
+  - LLM 任务：TaskConfigResolver → AgentRun → AgentRunService.execute
+  - 系统任务：直接调用 handler（用于内存维护、compact 等）
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from claw.scheduler.cron import import_callable, seconds_until_next_cron
-from claw.scheduler.executor import execute_task
 from claw.scheduler.history import TaskRunHistory
+from claw.scheduler.runner import TaskRunner
 from claw.scheduler.types import (
     CronTrigger,
     EventTrigger,
@@ -31,7 +31,7 @@ from claw.scheduler.types import (
 )
 
 if True:  # 避免循环导入
-    from claw.gateway import RuntimeGateway
+    from claw.scheduler.agent_run import AgentRunService
     from claw.scheduler.context import TaskContext
 
 logger = logging.getLogger(__name__)
@@ -73,14 +73,13 @@ class TaskScheduler:
 
     def __init__(
         self,
-        gateway: RuntimeGateway,
+        agent_run_service: AgentRunService,
         context: TaskContext | None = None,
         history: TaskRunHistory | None = None,
         max_workers: int = 1,
     ) -> None:
         if max_workers < 1:
             raise ValueError(f"max_workers must be >= 1, got {max_workers}")
-        self._gateway = gateway
         self._context = context
         self._history = history or TaskRunHistory()
         self._max_workers = max_workers
@@ -90,6 +89,14 @@ class TaskScheduler:
         self._handlers: dict[str, Callable[..., Awaitable[TaskResult]] | None] = {}
         self._last_result: dict[str, TaskResult] = {}
         self._events: dict[str, asyncio.Event] = {}
+
+        # TaskRunner：消费队列，执行 LLM / 系统任务
+        self._runner = TaskRunner(
+            agent_run_service=agent_run_service,
+            context=self._context,
+            handlers=self._handlers,
+            history=self._history,
+        )
 
         # Dispatcher + worker pool 运行时状态
         self._running = False
@@ -437,13 +444,7 @@ class TaskScheduler:
     # ------------------------------------------------------------------
 
     async def _do_execute(self, name: str, definition: TaskDefinition) -> TaskResult:
-        """委托 executor 执行任务。"""
-        result = await execute_task(
-            name, definition,
-            gateway=self._gateway,
-            context=self._context,
-            handlers=self._handlers,
-            history=self._history,
-        )
+        """委托 TaskRunner 执行任务。"""
+        result = await self._runner.run(name, definition)
         self._last_result[name] = result
         return result

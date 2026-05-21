@@ -63,6 +63,21 @@ class TaskDefinition:
 
 
 @dataclass(slots=True)
+class AgentRun:
+    """调度器内部执行请求：明确"对哪个 session、用哪个 agent、跑什么 prompt"。
+
+    与 InboundMessage（外部通道消息格式）完全解耦。
+    AgentRunService 负责将 AgentRun 转化为 AgentRunner 需要的 (session, message)。
+    """
+
+    session_id: str
+    agent_id: str
+    peer_key: str
+    prompt: str
+    task_name: str
+
+
+@dataclass(slots=True)
 class TaskResult:
     """单次任务执行结果。"""
 

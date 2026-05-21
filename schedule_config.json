@@ -28,20 +28,20 @@
       "enabled": true,
       "description": "空闲10分钟自动compact"
     },
-    "test_task": {
+    "11111111111111111": {
       "trigger": {
         "type": "interval",
         "seconds": 60
       },
       "handler": null,
       "enabled": false,
-      "description": "test",
+      "description": "111111111111111111",
       "params": {
-        "session_id": "sess_b526ba6a0c7049f58adc391b0b38822a",
-        "agent_id": "ag_default"
+        "session_id": "sess_f5fdab88f3294c32a3fa760a70c0a080",
+        "agent_id": "ag_084e3cc20665"
       },
-      "peer_key": "web:default:sched:test_task",
-      "prompt": "请告诉我几点了"
+      "peer_key": "web:default:sched:11111111111111111",
+      "prompt": "嘿嘿嘿"
     }
   }
 }

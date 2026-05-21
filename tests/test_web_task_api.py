@@ -11,6 +11,7 @@ from claw.agent_runtime.resolver import AgentResolver
 from claw.agent_runtime.store import SqliteAgentStore
 from claw.expert.store import SqliteExpertStore
 from claw.gateway import RuntimeGateway
+from claw.scheduler.agent_run import AgentRunService
 from claw.session import InMemorySessionStore
 from claw.storage.sqlite import get_connection, init_db
 from claw.types import AgentReply
@@ -62,11 +63,19 @@ def app(conn, task_config_path: Path, task_history_path: Path):
     agent_store.ensure_default()
 
     resolver = AgentResolver(agent_store)
+    session_store = InMemorySessionStore()
+    echo_runner = EchoRunner()
     gateway = RuntimeGateway(
-        session_store=InMemorySessionStore(),
-        agent_runner=EchoRunner(),
+        session_store=session_store,
+        agent_runner=echo_runner,
         delivery=SilentDelivery(),
         agent_resolver=resolver,
+    )
+
+    # 构造 AgentRunService（与 Gateway 共享 runner 和 session_store）
+    agent_run_service = AgentRunService(
+        agent_runner=echo_runner,
+        session_store=session_store,
     )
 
     from web.backend.services.task_service import TaskService
@@ -79,7 +88,8 @@ def app(conn, task_config_path: Path, task_history_path: Path):
 
     # 替换 TaskService 使用临时路径
     ts = TaskService(
-        gateway=gateway,
+        session_store=session_store,
+        agent_run_service=agent_run_service,
         config_path=str(task_config_path),
         history_path=str(task_history_path),
     )

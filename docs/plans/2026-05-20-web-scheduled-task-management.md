@@ -286,7 +286,59 @@ app = FastAPI(title="Mini Claw Web API", version="0.1.0", lifespan=lifespan)
 
 - [x] **TODO-5.1**: `pytest tests/test_task_service.py tests/test_web_task_api.py` — 35 passed
 - [x] **TODO-5.2**: `pytest` 全量测试通过 — 729 passed, 2 skipped
-- [ ] **TODO-5.3**: codex:adversarial-review 代码审查，修复问题直到审查通过
+- [x] **TODO-5.3**: codex:adversarial-review 代码审查
+
+---
+
+## Phase 6: 调度器执行管道重构（定时任务不走 Gateway）
+
+**动机**：定时任务（LLM 类型）原来通过构造 `InboundMessage` 走 `Gateway.handle_inbound_message()` 全链路。Gateway 是为外部通道消息设计的，定时任务是内部调度不应绕道。逻辑分散在 executor.py 的平铺函数中，缺少清晰分层。
+
+**目标架构**：
+```
+CronScheduler (scheduler.py)
+  ↓ 发现 due task
+TaskQueue (scheduler.py 内部)
+  ↓ 排队、防重复、并发控制
+TaskRunner (runner.py)
+  ↓ 消费任务
+TaskConfigResolver (runner.py 内部方法)
+  ↓ 解析 agent/prompt/session
+AgentRunService (agent_run.py)
+  ↓ 加载 session → 注入 context → 调用 AgentRunner
+AgentRunner (已有的 ContextBuildingAgentRunner)
+  ↓ 执行 LLM + Tool Loop
+DeliveryRouter (agent_run.py 内部)
+  ↓ 保存 session + 可选通知
+Channel / Session
+```
+
+### 变更清单
+
+| 文件 | 变更 |
+|------|------|
+| `claw/scheduler/types.py` | 新增 `AgentRun` 数据类 |
+| `claw/scheduler/agent_run.py` | **新建**：`AgentRunService` 类 |
+| `claw/scheduler/runner.py` | **新建**：`TaskRunner` 类 |
+| `claw/scheduler/scheduler.py` | 构造函数改接收 `AgentRunService`，`_do_execute` 委托给 `TaskRunner` |
+| `claw/scheduler/executor.py` | **删除**（被 runner.py + agent_run.py 替代） |
+| `claw/scheduler/__init__.py` | 导出 `AgentRun`, `TaskRunner`, `AgentRunService` |
+| `claw/agent.py` | MiniClaw 构造 `AgentRunService` 传给 `TaskScheduler` |
+| `web/backend/app.py` | `_build_default_gateway` 返回共享组件，构造 `AgentRunService` |
+| `web/backend/services/task_service.py` | 新增 `agent_run_service` 参数 |
+| `tests/test_scheduler.py` | `_mock_scheduler` 改用 `AgentRunService` mock |
+| `tests/test_task_service.py` | fixture 新增 `mock_agent_run_service` |
+| `tests/test_web_task_api.py` | fixture 构造 `AgentRunService` 实例 |
+
+- [x] **TODO-6.1**: `claw/scheduler/types.py` 新增 AgentRun
+- [x] **TODO-6.2**: 新建 `claw/scheduler/agent_run.py`
+- [x] **TODO-6.3**: 新建 `claw/scheduler/runner.py`
+- [x] **TODO-6.4**: 修改 `claw/scheduler/scheduler.py`
+- [x] **TODO-6.5**: 修改 Web 层 (`app.py`, `task_service.py`)
+- [x] **TODO-6.6**: 删除 `claw/scheduler/executor.py`
+- [x] **TODO-6.7**: 更新 `claw/scheduler/__init__.py`
+- [x] **TODO-6.8**: 更新测试，全量 729 passed, 2 skipped
+- [ ] **TODO-6.9**: codex:adversarial-review 审查，修复问题
 
 ---
 

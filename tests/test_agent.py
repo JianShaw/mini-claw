@@ -40,7 +40,7 @@ async def test_mini_claw_preserves_history_across_messages() -> None:
     claw = _make_claw(delivery)
     await claw.areply("first")
     await claw.areply("second")
-    session = await claw.gateway._session_store.get_active("local:local-app:local-user")
+    session = await claw.gateway.session_store.get_active("local:local-app:local-user")
     assert session is not None
     assert len(session.history) == 4
 
@@ -66,7 +66,7 @@ async def test_mini_claw_areply_stream_saves_history() -> None:
     claw = _make_claw(delivery)
     async for _ in claw.areply_stream("hello"):
         pass
-    session = await claw.gateway._session_store.get_active("local:local-app:local-user")
+    session = await claw.gateway.session_store.get_active("local:local-app:local-user")
     assert session is not None
     assert len(session.history) == 2
 

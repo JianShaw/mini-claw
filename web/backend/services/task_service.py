@@ -28,10 +28,11 @@ from claw.scheduler.types import (
     TaskRunRecord,
     Trigger,
 )
+from claw.ports import SessionStore
 from claw.session import build_peer_key, create_session_from_identity
 
 if True:  # 避免循环导入
-    from claw.gateway import RuntimeGateway
+    from claw.scheduler.agent_run import AgentRunService
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +45,16 @@ class TaskService:
 
     def __init__(
         self,
-        gateway: RuntimeGateway,
+        session_store: SessionStore,
+        agent_run_service: AgentRunService | None = None,
         config_path: str = "schedule_config.json",
         history_path: str = "data/scheduler/history.jsonl",
     ) -> None:
-        self._gateway = gateway
+        self._session_store = session_store
         self._config_path = config_path
         self._history = TaskRunHistory(path=history_path)
         self._scheduler = TaskScheduler(
-            gateway=gateway,
+            agent_run_service=agent_run_service,
             history=self._history,
             max_workers=1,
         )
@@ -144,20 +146,20 @@ class TaskService:
         if name in self._definitions:
             raise ValueError(f"Task already exists: {name}")
 
-        # 1. 创建专用推送 session
+        # 1. 创建专用推送 session（不走 Gateway，直接操作 SessionStore）
         sched_peer_id = f"{_SCHED_PEER_PREFIX}:{name}"
-        session = await self._gateway.create_session_for_agent(
-            peer_key=build_peer_key(WEB_CHANNEL, WEB_ACCOUNT_ID, sched_peer_id),
-            agent_id=agent_id,
+        peer_key = build_peer_key(WEB_CHANNEL, WEB_ACCOUNT_ID, sched_peer_id)
+        session = create_session_from_identity(
             channel=WEB_CHANNEL,
             account_id=WEB_ACCOUNT_ID,
             peer_id=sched_peer_id,
             sender_id=WEB_SENDER_ID,
+            agent_id=agent_id,
         )
-        # 标记 session 类型
         session.metadata["session_type"] = "scheduled"
         session.metadata["task_name"] = name
-        await self._gateway._session_store.save(session)
+        await self._session_store.save(session)
+        await self._session_store.set_active(peer_key, session.session_id)
 
         # 2. 构建 TaskDefinition，peer_key 从 session 获取
         definition = TaskDefinition(
@@ -249,9 +251,9 @@ class TaskService:
 
         # 清理关联的推送 session
         session_id = self._session_map.pop(name, None)
-        if session_id and existing.peer_key:
+        if session_id:
             try:
-                await self._gateway.delete_session(existing.peer_key, session_id)
+                await self._session_store.delete(session_id)
             except Exception:
                 logger.warning("Failed to delete session %s for task %s", session_id, name)
 

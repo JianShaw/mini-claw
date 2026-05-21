@@ -14,6 +14,7 @@ from claw.expert.marketplace import ExpertMarketplace
 from claw.expert.service import ExpertService
 from claw.expert.store import SqliteExpertStore
 from claw.gateway import RuntimeGateway
+from claw.scheduler.agent_run import AgentRunService
 from claw.storage.session_store import SqliteSessionStore
 from claw.storage.sqlite import get_connection, init_db
 from web.backend.routers import agents, chat, conversations, experts, tasks
@@ -53,7 +54,24 @@ def create_app(
     _gateway = gateway
     if _gateway is None:
         _session_store = SqliteSessionStore(conn)
-        _gateway = _build_default_gateway(_agent_store, _session_store)
+        _gateway, _wrapped_runner, _memory_manager = _build_default_gateway(
+            _agent_store, _session_store,
+        )
+        _agent_run_service = AgentRunService(
+            agent_runner=_wrapped_runner,
+            session_store=_session_store,
+            memory_manager=_memory_manager,
+        )
+    else:
+        # gateway 注入时，从 gateway 公共属性获取共享组件
+        _session_store = _gateway.session_store
+        _agent_run_service = AgentRunService(
+            agent_runner=_gateway.agent_runner,
+            session_store=_session_store,
+            memory_manager=_gateway.memory_manager,
+            compressor=_gateway.compressor,
+            agent_resolver=_gateway.agent_resolver,
+        )
 
     # 注册路由
     app.include_router(experts.router, prefix="/api/v1")
@@ -83,7 +101,10 @@ def create_app(
     app.state.agent_store = _agent_store
 
     # 构建定时任务管理服务（lifespan 负责启停）
-    _task_service = TaskService(gateway=_gateway)
+    _task_service = TaskService(
+        session_store=_session_store,
+        agent_run_service=_agent_run_service,
+    )
     app.state.task_service = _task_service
 
     _wire_deps(app, _gateway, _expert_store, _agent_store)
@@ -104,11 +125,11 @@ def _make_lifespan():
 
 def _build_default_gateway(
     agent_store: SqliteAgentStore, session_store: SqliteSessionStore
-) -> RuntimeGateway:
-    """构建带真实 DeepSeekAgentRunner 的 RuntimeGateway。
+) -> tuple:
+    """构建 Gateway 及其共享组件，供 AgentRunService 复用。
 
-    注册内置工具 + 技能 + 记忆管理器 + AgentResolver，
-    使 Web 端聊天走完整的 Agent 链路（非 Noop 占位）。
+    返回 (gateway, wrapped_runner, memory_manager)。
+    wrapped_runner = ContextBuildingAgentRunner 实例，同时传给 Gateway 和 AgentRunService。
     """
     from claw.agent_runtime.context import RuntimeContextBuilder
     from claw.agent_runtime.wrapper import ContextBuildingAgentRunner
@@ -139,13 +160,15 @@ def _build_default_gateway(
     # AgentResolver：按 session.agent_id 解析运行配置
     resolver = AgentResolver(agent_store)
 
-    return RuntimeGateway(
+    gateway = RuntimeGateway(
         session_store=session_store,
         agent_runner=wrapped_runner,
         delivery=_NoopDelivery(),
         memory_manager=memory_manager,
         agent_resolver=resolver,
     )
+
+    return gateway, wrapped_runner, memory_manager
 
 
 class _NoopDelivery:
