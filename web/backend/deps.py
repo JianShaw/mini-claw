@@ -11,6 +11,9 @@ from claw.expert.marketplace import ExpertMarketplace
 from claw.expert.registry import ExpertRegistry
 from claw.expert.service import ExpertService
 from claw.expert.store import SqliteExpertStore
+from claw.skills.marketplace import MarketplaceOps
+from claw.skills.registry import SkillsRegistry
+from claw.skills.store import SkillStore
 from claw.storage.sqlite import get_connection, init_db
 
 
@@ -48,3 +51,18 @@ def get_agent_factory() -> AgentFactory:
 
 def get_agent_resolver() -> AgentResolver:
     return AgentResolver(get_agent_store())
+
+
+@lru_cache(maxsize=1)
+def get_skill_store() -> SkillStore:
+    return SkillStore()
+
+
+@lru_cache(maxsize=1)
+def get_skill_registry() -> SkillsRegistry:
+    return SkillsRegistry.from_store(get_skill_store())
+
+
+@lru_cache(maxsize=1)
+def get_marketplace_ops() -> MarketplaceOps:
+    return MarketplaceOps(get_skill_store(), get_skill_registry())

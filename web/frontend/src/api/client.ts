@@ -251,3 +251,76 @@ export async function fetchTaskHistory(name: string, limit = 20): Promise<TaskRu
 export async function deleteTask(name: string): Promise<void> {
   await fetch(`${API_BASE}/tasks/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
+
+// ---- Skills ----
+
+export interface SkillMeta {
+  version: string;
+  author: string;
+  tags: string[];
+  category: string;
+}
+
+export interface SkillListItem {
+  name: string;
+  description: string;
+  source: string;
+  version: string;
+  tools: string[];
+  category: string;
+}
+
+export interface Skill extends SkillListItem {
+  instructions: string;
+  meta: SkillMeta;
+  path: string | null;
+}
+
+export async function fetchSkills(q?: string): Promise<SkillListItem[]> {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  return dedupedFetch<SkillListItem[]>(`${API_BASE}/skills?${params}`);
+}
+
+export async function fetchSkill(name: string): Promise<Skill> {
+  const resp = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`);
+  return resp.json();
+}
+
+export async function installSkillFromFile(file: File): Promise<Skill> {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await fetch(`${API_BASE}/skills/install/file`, { method: 'POST', body: form });
+  if (!resp.ok) throw new Error((await resp.json()).detail || 'Install failed');
+  return resp.json();
+}
+
+export async function installSkillFromZip(file: File): Promise<Skill[]> {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await fetch(`${API_BASE}/skills/install/zip`, { method: 'POST', body: form });
+  if (!resp.ok) throw new Error((await resp.json()).detail || 'Install failed');
+  return resp.json();
+}
+
+export async function uninstallSkill(name: string): Promise<void> {
+  const resp = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(err.detail || 'Uninstall failed');
+  }
+}
+
+export async function exportSkill(name: string): Promise<Blob> {
+  const resp = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}/export`);
+  return resp.blob();
+}
+
+export async function exportSkills(names: string[]): Promise<Blob> {
+  const resp = await fetch(`${API_BASE}/skills/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names }),
+  });
+  return resp.blob();
+}

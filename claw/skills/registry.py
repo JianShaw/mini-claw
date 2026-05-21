@@ -35,6 +35,16 @@ class SkillsRegistry:
         self._active_skill: Skill | None = None
         self._store: Any = None
 
+    @classmethod
+    def from_store(cls, store: Any) -> SkillsRegistry:
+        """工厂方法：创建注册表并从磁盘同步加载所有技能。"""
+        registry = cls()
+        registry._store = store
+        for skill in store.load_all():
+            registry._skills[skill.name] = skill
+        logger.info("从存储加载了 %d 个技能", len(registry._skills))
+        return registry
+
     # --- 基础操作 ---
 
     def register(self, skill: Skill) -> None:

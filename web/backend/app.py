@@ -15,9 +15,12 @@ from claw.expert.service import ExpertService
 from claw.expert.store import SqliteExpertStore
 from claw.gateway import RuntimeGateway
 from claw.scheduler.agent_run import AgentRunService
+from claw.skills.marketplace import MarketplaceOps
+from claw.skills.registry import SkillsRegistry
+from claw.skills.store import SkillStore
 from claw.storage.session_store import SqliteSessionStore
 from claw.storage.sqlite import get_connection, init_db
-from web.backend.routers import agents, chat, conversations, experts, tasks
+from web.backend.routers import agents, chat, conversations, experts, skills, tasks
 from web.backend.services.task_service import TaskService
 
 
@@ -50,12 +53,18 @@ def create_app(
     # 确保默认 Agent 存在
     _agent_store.ensure_default()
 
+    # 构建 skills 组件（共享 Registry 实例，Gateway 和 Marketplace 使用同一个）
+    _skill_store = SkillStore()
+    _skill_registry = SkillsRegistry()
+    _skill_registry.set_store(_skill_store)
+    _marketplace_ops = MarketplaceOps(_skill_store, _skill_registry)
+
     # 构建 gateway（如果未注入）
     _gateway = gateway
     if _gateway is None:
         _session_store = SqliteSessionStore(conn)
         _gateway, _wrapped_runner, _memory_manager = _build_default_gateway(
-            _agent_store, _session_store,
+            _agent_store, _session_store, skills_registry=_skill_registry,
         )
         _agent_run_service = AgentRunService(
             agent_runner=_wrapped_runner,
@@ -79,6 +88,7 @@ def create_app(
     app.include_router(conversations.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
+    app.include_router(skills.router, prefix="/api/v1")
 
     # --- 统一在 _gateway 确定后创建 Web Channel 组件 ---
     from claw.channels.web.adapter import WebAdapter
@@ -107,7 +117,7 @@ def create_app(
     )
     app.state.task_service = _task_service
 
-    _wire_deps(app, _gateway, _expert_store, _agent_store)
+    _wire_deps(app, _gateway, _expert_store, _agent_store, _skill_store, _skill_registry, _marketplace_ops)
 
     return app
 
@@ -124,7 +134,7 @@ def _make_lifespan():
 
 
 def _build_default_gateway(
-    agent_store: SqliteAgentStore, session_store: SqliteSessionStore
+    agent_store: SqliteAgentStore, session_store: SqliteSessionStore, *, skills_registry: SkillsRegistry | None = None
 ) -> tuple:
     """构建 Gateway 及其共享组件，供 AgentRunService 复用。
 
@@ -136,13 +146,14 @@ def _build_default_gateway(
     from claw.builtin_tools import register_all
     from claw.deepseek import DeepSeekAgentRunner
     from claw.memory import MemoryManager
-    from claw.skills.registry import SkillsRegistry
     from claw.tools import ToolsRegistry
+
+    # 共享 SkillsRegistry（从外部传入），确保 Web 安装的技能在聊天中可见
+    _skills_registry = skills_registry or SkillsRegistry()
 
     # 注册内置工具（read_file, write_file, run_command 等）
     tools_registry = ToolsRegistry()
-    skills_registry = SkillsRegistry()
-    register_all(tools_registry, skills_registry=skills_registry)
+    register_all(tools_registry, skills_registry=_skills_registry)
 
     # DeepSeekAgentRunner：通过 OpenAI 兼容接口调用 LLM
     runner = DeepSeekAgentRunner(tools_registry=tools_registry)
@@ -153,7 +164,7 @@ def _build_default_gateway(
     # 包装 runner：上下文注入对所有 Runner 生效
     context_builder = RuntimeContextBuilder(
         memory_manager=memory_manager,
-        skills_registry=skills_registry,
+        skills_registry=_skills_registry,
     )
     wrapped_runner = ContextBuildingAgentRunner(runner, context_builder)
 
@@ -183,6 +194,9 @@ def _wire_deps(
     gateway: RuntimeGateway,
     expert_store: SqliteExpertStore,
     agent_store: SqliteAgentStore,
+    skill_store: SkillStore,
+    skill_registry: SkillsRegistry,
+    marketplace_ops: MarketplaceOps,
 ) -> None:
     """将 gateway/store 注入到路由的 Depends 中。"""
     from web.backend.deps import (
@@ -193,6 +207,9 @@ def _wire_deps(
         get_expert_registry,
         get_expert_service,
         get_expert_store,
+        get_marketplace_ops,
+        get_skill_registry,
+        get_skill_store,
     )
 
     # FastAPI dependency_overrides 机制：
@@ -205,6 +222,11 @@ def _wire_deps(
     app.dependency_overrides[get_agent_store] = lambda: agent_store
     app.dependency_overrides[get_agent_factory] = lambda: AgentFactory(expert_store, agent_store)
     app.dependency_overrides[get_agent_resolver] = lambda: AgentResolver(agent_store)
+
+    # Skills 依赖注入：共享 Registry 实例确保 Web 安装的技能在聊天中可见
+    app.dependency_overrides[get_skill_store] = lambda: skill_store
+    app.dependency_overrides[get_skill_registry] = lambda: skill_registry
+    app.dependency_overrides[get_marketplace_ops] = lambda: marketplace_ops
 
     # conversations/chat 路由依赖 Gateway（含 session 管理、agent runner、delivery），
     # 必须注入完整 Gateway 而非从 deps.py 默认构建（默认是 NoopRunner）
