@@ -51,6 +51,7 @@ export interface ConversationListItem {
 export interface Message {
   role: string;
   content: string;
+  ts?: number | null;
 }
 
 export async function fetchExperts(q?: string): Promise<Expert[]> {

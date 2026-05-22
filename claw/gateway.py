@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from time import time
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ class RuntimeGateway:
             yield chunk
 
         # 流结束，保存完整 assistant message（仅 content 部分）
-        session.history.append(ChatMessage(role="assistant", content=full_text))
+        session.history.append(ChatMessage(role="assistant", content=full_text, ts=int(time() * 1000)))
         message.metadata["session_id"] = session.session_id
         await self._maybe_update_daily_memory(session)
         logger.info(

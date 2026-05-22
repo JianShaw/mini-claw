@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from time import time
 
 from claw.types import AgentReply, ChatMessage, InboundMessage, Session, StreamChunk
 
@@ -14,12 +15,12 @@ class EchoAgentRunner:
     """
 
     async def run(self, session: Session, message: InboundMessage) -> AgentReply:
-        session.history.append(ChatMessage(role="user", content=message.text))
+        session.history.append(ChatMessage(role="user", content=message.text, ts=int(time() * 1000)))
         reply = AgentReply(text=f"echo: {message.text}")
-        session.history.append(ChatMessage(role="assistant", content=reply.text))
+        session.history.append(ChatMessage(role="assistant", content=reply.text, ts=int(time() * 1000)))
         return reply
 
     async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]:
         """流式版本：yield StreamChunk。assistant history 由调用方（Gateway）追加。"""
-        session.history.append(ChatMessage(role="user", content=message.text))
+        session.history.append(ChatMessage(role="user", content=message.text, ts=int(time() * 1000)))
         yield StreamChunk(type="content", text=f"echo: {message.text}")

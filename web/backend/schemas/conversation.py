@@ -8,6 +8,7 @@ from pydantic import BaseModel
 class ChatMessageSchema(BaseModel):
     role: str
     content: str
+    ts: int | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None

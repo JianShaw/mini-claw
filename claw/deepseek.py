@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator
+from time import time
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -103,7 +104,7 @@ class DeepSeekAgentRunner:
         不带 tools 调用 LLM，避免继续工具调用。API 失败时 fallback 到静态文本。
         """
         messages.append({"role": "user", "content": _TOOL_LIMIT_PROMPT})
-        session.history.append(ChatMessage(role="user", content=_TOOL_LIMIT_PROMPT))
+        session.history.append(ChatMessage(role="user", content=_TOOL_LIMIT_PROMPT, ts=int(time() * 1000)))
 
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -116,11 +117,11 @@ class DeepSeekAgentRunner:
         except Exception as e:
             logger.error("Finalize tool limit API error: %s", e)
             fallback = "抱歉，工具调用次数已达上限，无法继续操作。"
-            session.history.append(ChatMessage(role="assistant", content=fallback))
+            session.history.append(ChatMessage(role="assistant", content=fallback, ts=int(time() * 1000)))
             return fallback
 
         text = response.choices[0].message.content or ""
-        session.history.append(ChatMessage(role="assistant", content=text))
+        session.history.append(ChatMessage(role="assistant", content=text, ts=int(time() * 1000)))
         return text
 
     def _build_messages(self, session: Session) -> list[dict[str, Any]]:
@@ -174,7 +175,7 @@ class DeepSeekAgentRunner:
 
     async def run(self, session: Session, message: InboundMessage) -> AgentReply:
         """同步接口：调用 LLM 生成回复，支持工具调用循环。"""
-        session.history.append(ChatMessage(role="user", content=message.text))
+        session.history.append(ChatMessage(role="user", content=message.text, ts=int(time() * 1000)))
         messages = self._build_messages(session)
         kwargs = self._build_kwargs(messages, session)
 
@@ -192,7 +193,7 @@ class DeepSeekAgentRunner:
             if not msg.tool_calls:
                 text = msg.content or ""
                 reasoning = getattr(msg, "reasoning_content", None) if self.thinking else None
-                session.history.append(ChatMessage(role="assistant", content=text))
+                session.history.append(ChatMessage(role="assistant", content=text, ts=int(time() * 1000)))
                 metadata: dict[str, Any] = {}
                 if reasoning:
                     metadata["reasoning"] = reasoning
@@ -206,7 +207,7 @@ class DeepSeekAgentRunner:
             # 思考模式：assistant 消息必须携带 reasoning_content 传回 API
             reasoning = getattr(msg, "reasoning_content", None) if self.thinking else None
             # 记录 assistant 的工具调用消息（保存 reasoning_content 以便后续恢复）
-            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_data, reasoning_content=reasoning))
+            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_data, reasoning_content=reasoning, ts=int(time() * 1000)))
             api_assistant_msg: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": tool_calls_data}
             if reasoning:
                 api_assistant_msg["reasoning_content"] = reasoning
@@ -225,11 +226,11 @@ class DeepSeekAgentRunner:
                 session.history.append(ChatMessage(
                     role="tool", content=result_str,
                     tool_call_id=tc.id, tool_name=tc.function.name,
+                    ts=int(time() * 1000),
                 ))
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
 
             iterations += 1
-            # 下一轮循环使用更新后的 messages
             kwargs = self._build_kwargs(messages, session)
 
         # 超过最大迭代次数 → 让 LLM 做最终总结
@@ -243,10 +244,9 @@ class DeepSeekAgentRunner:
     async def run_stream(self, session: Session, message: InboundMessage) -> AsyncIterator[StreamChunk]:
         """流式版本：通过 stream=True 调用 API，逐 chunk yield StreamChunk。
         支持工具调用：当 LLM 请求工具调用时，执行工具后重新调用 API 继续流式输出。"""
-        session.history.append(ChatMessage(role="user", content=message.text))
+        session.history.append(ChatMessage(role="user", content=message.text, ts=int(time() * 1000)))
         messages = self._build_messages(session)
 
-        # 流式场景下可能需要多轮工具调用
         iterations = 0
         while iterations < self._max_tool_iterations:
             kwargs = self._build_kwargs(messages, session)
@@ -308,7 +308,7 @@ class DeepSeekAgentRunner:
             )
 
             # 记录 assistant 的工具调用消息（保存 reasoning_content 以便后续恢复）
-            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_list, reasoning_content=full_reasoning or None))
+            session.history.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls_list, reasoning_content=full_reasoning or None, ts=int(time() * 1000)))
             api_assistant_msg: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": tool_calls_list}
             if full_reasoning:
                 api_assistant_msg["reasoning_content"] = full_reasoning
@@ -332,6 +332,7 @@ class DeepSeekAgentRunner:
                 session.history.append(ChatMessage(
                     role="tool", content=result_str,
                     tool_call_id=tc["id"], tool_name=tc["function"]["name"],
+                    ts=int(time() * 1000),
                 ))
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result_str})
 

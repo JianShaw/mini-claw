@@ -96,6 +96,7 @@ def _session_to_schema(session, include_messages: bool = False) -> ConversationS
         for m in session.history:
             messages.append(ChatMessageSchema(
                 role=m.role, content=m.content,
+                ts=m.ts,
                 tool_calls=m.tool_calls, tool_call_id=m.tool_call_id,
                 tool_name=m.tool_name,
             ))

@@ -1,29 +1,69 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { streamChat, fetchConversation, type Message } from '../api/client';
+import { formatMessageTime, isDifferentDay, formatDateSeparator } from '../utils/time';
 
 interface Props {
   sessionId: string;
   onBack: () => void;
 }
 
+// 统一渲染列表项
+type RenderItem =
+  | { kind: 'message'; index: number; msg: Message }
+  | { kind: 'streaming_text'; content: string }
+  | { kind: 'streaming_thinking' };
+
 export default function ChatWindow({ sessionId, onBack }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const initialScrollDone = useRef(false);
 
   useEffect(() => {
+    initialScrollDone.current = false;
     loadMessages();
   }, [sessionId]);
 
+  // 首次加载消息后滚到底部（initialTopMostItemIndex 对异步数据不生效）
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamText]);
+    if (messages.length > 0 && !initialScrollDone.current) {
+      initialScrollDone.current = true;
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({
+          index: messages.length - 1,
+          behavior: 'auto',
+        });
+      });
+    }
+  }, [messages]);
 
   async function loadMessages() {
     const conv = await fetchConversation(sessionId);
     setMessages(conv.messages || []);
+  }
+
+  // 构建统一渲染列表
+  const renderItems: RenderItem[] = useMemo(() => {
+    const items: RenderItem[] = messages.map((msg, i) => ({ kind: 'message' as const, index: i, msg }));
+    if (streaming && streamText) {
+      items.push({ kind: 'streaming_text', content: streamText });
+    } else if (streaming) {
+      items.push({ kind: 'streaming_thinking' });
+    }
+    return items;
+  }, [messages, streaming, streamText]);
+
+  // 获取前一条消息（用于日期分隔线判断）
+  function getPrevMessage(index: number): Message | null {
+    // 在 renderItems 中找前一个 kind=message 的项
+    for (let i = index - 1; i >= 0; i--) {
+      if (renderItems[i].kind === 'message') return (renderItems[i] as { msg: Message }).msg;
+    }
+    return null;
   }
 
   async function handleSend() {
@@ -31,7 +71,7 @@ export default function ChatWindow({ sessionId, onBack }: Props) {
     if (!text || streaming) return;
 
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: text }]);
+    setMessages(prev => [...prev, { role: 'user', content: text, ts: Date.now() }]);
     setStreaming(true);
     setStreamText('');
 
@@ -46,13 +86,12 @@ export default function ChatWindow({ sessionId, onBack }: Props) {
           setStreamText(full);
         }
       }
-      // 流结束：先写入 messages，再清空 streamText，同一帧渲染
-      setMessages(msgs => [...msgs, { role: 'assistant', content: full }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: full, ts: Date.now() }]);
       setStreamText('');
-    } catch (err) {
+    } catch {
       setStreamText(prev => {
         if (prev) {
-          setMessages(msgs => [...msgs, { role: 'assistant', content: prev }]);
+          setMessages(msgs => [...msgs, { role: 'assistant', content: prev, ts: Date.now() }]);
         }
         return '';
       });
@@ -73,44 +112,35 @@ export default function ChatWindow({ sessionId, onBack }: Props) {
         </h2>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[70%] px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white border text-gray-800'
-              }`}
-            >
-              {msg.content}
-            </div>
-          </div>
-        ))}
-        {/* 思考中：发送后→首个 chunk 到达前的空窗期 */}
-        {streaming && !streamText && (
-          <div className="flex justify-start">
-            <div className="px-4 py-2.5 rounded-2xl text-sm bg-white border text-gray-400 flex items-center gap-1.5">
-              <span className="flex gap-0.5">
-                <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-              </span>
-              思考中...
-            </div>
-          </div>
+      {/* Messages — 虚拟列表 */}
+      <div className="flex-1 relative">
+        <Virtuoso
+          ref={virtuosoRef}
+          data={renderItems}
+          followOutput="smooth"
+          initialTopMostItemIndex={Math.max(0, renderItems.length - 1)}
+          atBottomStateChange={setShowScrollBtn}
+          atBottomThreshold={100}
+          itemContent={(index, item) => (
+            <RenderItemContent
+              item={item}
+              prevMsg={getPrevMessage(index)}
+            />
+          )}
+          components={{
+            Header: () => <div className="h-4" />,
+            Footer: () => <div className="h-4" />,
+          }}
+        />
+        {/* 回到底部按钮 */}
+        {showScrollBtn && (
+          <button
+            onClick={() => virtuosoRef.current?.scrollToIndex({ index: renderItems.length - 1, behavior: 'smooth' })}
+            className="absolute bottom-4 right-6 w-10 h-10 bg-white border rounded-full shadow-lg flex items-center justify-center text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            ↓
+          </button>
         )}
-        {/* 流式回复气泡 */}
-        {streamText && (
-          <div className="flex justify-start">
-            <div className="max-w-[70%] px-4 py-2.5 rounded-2xl text-sm bg-white border text-gray-800 whitespace-pre-wrap">
-              {streamText}
-              <span className="animate-pulse">▌</span>
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input */}
@@ -146,6 +176,76 @@ export default function ChatWindow({ sessionId, onBack }: Props) {
               </svg>
             )}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- 子组件 ---
+
+function RenderItemContent({ item, prevMsg }: { item: RenderItem; prevMsg: Message | null }) {
+  switch (item.kind) {
+    case 'message':
+      return <MessageBubble msg={item.msg} prevMsg={prevMsg} />;
+    case 'streaming_text':
+      return (
+        <div className="px-4 mb-4">
+          <div className="flex justify-start">
+            <div className="max-w-[70%] px-4 py-2.5 rounded-2xl text-sm bg-white border text-gray-800 whitespace-pre-wrap">
+              {item.content}
+              <span className="animate-pulse">▌</span>
+            </div>
+          </div>
+        </div>
+      );
+    case 'streaming_thinking':
+      return (
+        <div className="px-4 mb-4">
+          <div className="flex justify-start">
+            <div className="px-4 py-2.5 rounded-2xl text-sm bg-white border text-gray-400 flex items-center gap-1.5">
+              <span className="flex gap-0.5">
+                <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+              思考中...
+            </div>
+          </div>
+        </div>
+      );
+  }
+}
+
+function MessageBubble({ msg, prevMsg }: { msg: Message; prevMsg: Message | null }) {
+  const isUser = msg.role === 'user';
+  const showDateSep = prevMsg ? isDifferentDay(prevMsg.ts, msg.ts) : false;
+  const timeStr = formatMessageTime(msg.ts);
+
+  return (
+    <div className="px-4 mb-4">
+      {/* 日期分隔线 */}
+      {showDateSep && msg.ts && (
+        <div className="flex justify-center py-2 mb-2">
+          <span className="text-xs text-gray-400 bg-gray-50 px-3 py-1 rounded-full">
+            {formatDateSeparator(msg.ts)}
+          </span>
+        </div>
+      )}
+      <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div className={`max-w-[70%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
+          <div
+            className={`px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${
+              isUser ? 'bg-blue-600 text-white' : 'bg-white border text-gray-800'
+            }`}
+          >
+            {msg.content}
+          </div>
+          {timeStr && (
+            <span className={`text-xs text-gray-400 mt-1 ${isUser ? 'mr-1' : 'ml-1'}`}>
+              {timeStr}
+            </span>
+          )}
         </div>
       </div>
     </div>
