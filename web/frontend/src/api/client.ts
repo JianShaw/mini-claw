@@ -19,6 +19,10 @@ export interface Expert {
   system_prompt: string;
   default_tools: string[];
   default_skills: string[];
+  default_mcp_servers?: string[];
+  default_model?: Record<string, unknown>;
+  default_memory?: Record<string, unknown>;
+  default_sandbox?: Record<string, unknown>;
   meta: { avatar: string; tags: string[]; category: string };
   source: string;
 }
@@ -30,7 +34,28 @@ export interface Agent {
   system_prompt: string;
   enabled_tools: string[];
   enabled_skills: string[];
-  llm_model: Record<string, unknown>;
+  enabled_mcp_servers?: string[];
+  llm_model?: Record<string, unknown>;
+  model_config?: Record<string, unknown>;
+  memory_config?: Record<string, unknown>;
+  sandbox_config?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface UpdateAgentRequest {
+  name?: string;
+  system_prompt?: string;
+  enabled_skills?: string[];
+  enabled_tools?: string[];
+  enabled_mcp_servers?: string[];
+  model_config?: Record<string, unknown>;
+}
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown> | null;
 }
 
 export interface Conversation {
@@ -77,6 +102,10 @@ export async function fetchAgents(): Promise<Agent[]> {
   return dedupedFetch<Agent[]>(`${API_BASE}/agents`);
 }
 
+export async function fetchAgent(agentId: string): Promise<Agent> {
+  return dedupedFetch<Agent>(`${API_BASE}/agents/${encodeURIComponent(agentId)}`);
+}
+
 export async function createAgent(expertName: string, agentName?: string): Promise<Agent> {
   const resp = await fetch(`${API_BASE}/agents`, {
     method: 'POST',
@@ -84,6 +113,23 @@ export async function createAgent(expertName: string, agentName?: string): Promi
     body: JSON.stringify({ expert_name: expertName, agent_name: agentName }),
   });
   return resp.json();
+}
+
+export async function updateAgent(agentId: string, req: UpdateAgentRequest): Promise<Agent> {
+  const resp = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(err.detail || 'Update failed');
+  }
+  return resp.json();
+}
+
+export async function fetchTools(): Promise<ToolInfo[]> {
+  return dedupedFetch<ToolInfo[]>(`${API_BASE}/tools`);
 }
 
 export async function createConversation(agentId: string): Promise<Conversation> {

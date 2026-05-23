@@ -155,6 +155,49 @@ class TestAgentAPI:
         assert data["name"] == "Updated Agent"
         assert data["system_prompt"] == "New prompt"
 
+    def test_update_agent_skills_tools_and_model_config(self, client):
+        resp = client.put("/api/v1/agents/default-agent", json={
+            "enabled_skills": ["code-review"],
+            "enabled_tools": ["calculator", "load_skill"],
+            "model_config": {
+                "temperature": 0.2,
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled_skills"] == ["code-review"]
+        assert data["enabled_tools"] == ["calculator", "load_skill"]
+        assert data["model_config"]["temperature"] == 0.2
+
+    def test_update_agent_rejects_unknown_skill(self, client):
+        resp = client.put("/api/v1/agents/default-agent", json={
+            "enabled_skills": ["missing-skill"],
+        })
+        assert resp.status_code == 422
+        assert "missing-skill" in resp.json()["detail"]
+
+    def test_update_agent_rejects_unknown_tool(self, client):
+        resp = client.put("/api/v1/agents/default-agent", json={
+            "enabled_tools": ["missing-tool"],
+        })
+        assert resp.status_code == 422
+        assert "missing-tool" in resp.json()["detail"]
+
+    def test_update_agent_rejects_unknown_model_config_field(self, client):
+        resp = client.put("/api/v1/agents/default-agent", json={
+            "model_config": {"top_p": 0.9},
+        })
+        assert resp.status_code == 422
+        assert "top_p" in resp.json()["detail"]
+
+    def test_update_agent_rejects_provider_and_model_name(self, client):
+        resp = client.put("/api/v1/agents/default-agent", json={
+            "model_config": {"provider": "openai", "name": "gpt-4.1"},
+        })
+        assert resp.status_code == 422
+        assert "provider" in resp.json()["detail"]
+        assert "name" in resp.json()["detail"]
+
     def test_delete_agent(self, client):
         client.post("/api/v1/experts/code-helper/install")
         create_resp = client.post("/api/v1/agents", json={"expert_name": "code-helper"})

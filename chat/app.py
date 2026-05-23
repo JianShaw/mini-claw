@@ -285,7 +285,7 @@ def _make_claw() -> MiniClaw:
         delivery=delivery,
         tools_registry=registry,
         mcp_config_path="mcp_config.json",
-        memory_manager=MemoryManager(),
+        memory_manager=MemoryManager(vector_db_path="data/mini_claw.sqlite"),
         schedule_config_path="schedule_config.json",
         skills_registry=skills,
     )

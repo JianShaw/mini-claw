@@ -66,6 +66,7 @@ class MemoryManager:
         vector_index: SQLiteMemoryVectorIndex | None = None,
         use_vector_index: bool | None = None,
         today_provider: Callable[[], date] | None = None,
+        vector_db_path: str | Path | None = None,
     ) -> None:
         self.daily_store = DailyMemoryStore(root)
         self.long_store = LongTermMemoryStore(root)
@@ -82,7 +83,11 @@ class MemoryManager:
         self.vector_index = vector_index
         if self._use_vector_index and self.vector_index is None:
             provider = embedding_provider or FastEmbedProvider()
-            self.vector_index = SQLiteMemoryVectorIndex(root, provider)
+            # 默认由 SQLiteMemoryVectorIndex 自行管理 db_path（root / memory_index.sqlite3）
+            # 生产环境通过 vector_db_path 复用主数据库
+            self.vector_index = SQLiteMemoryVectorIndex(
+                root, provider, db_path=vector_db_path
+            )
         self._today_provider = today_provider or date.today
 
     def today(self) -> date:

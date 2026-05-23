@@ -20,7 +20,7 @@ from claw.skills.registry import SkillsRegistry
 from claw.skills.store import SkillStore
 from claw.storage.session_store import SqliteSessionStore
 from claw.storage.sqlite import get_connection, init_db
-from web.backend.routers import agents, chat, conversations, experts, skills, tasks
+from web.backend.routers import agents, chat, conversations, experts, skills, tasks, tools
 from web.backend.services.task_service import TaskService
 
 
@@ -55,16 +55,21 @@ def create_app(
 
     # 构建 skills 组件（共享 Registry 实例，Gateway 和 Marketplace 使用同一个）
     _skill_store = SkillStore()
-    _skill_registry = SkillsRegistry()
-    _skill_registry.set_store(_skill_store)
+    _skill_registry = SkillsRegistry.from_store(_skill_store)
     _marketplace_ops = MarketplaceOps(_skill_store, _skill_registry)
+
+    from claw.builtin_tools import register_all
+    from claw.tools import ToolsRegistry
+
+    _tools_registry = ToolsRegistry()
+    register_all(_tools_registry, skills_registry=_skill_registry)
 
     # 构建 gateway（如果未注入）
     _gateway = gateway
     if _gateway is None:
         _session_store = SqliteSessionStore(conn)
         _gateway, _wrapped_runner, _memory_manager = _build_default_gateway(
-            _agent_store, _session_store, skills_registry=_skill_registry,
+            _agent_store, _session_store, skills_registry=_skill_registry, tools_registry=_tools_registry,
         )
         _agent_run_service = AgentRunService(
             agent_runner=_wrapped_runner,
@@ -89,6 +94,7 @@ def create_app(
     app.include_router(chat.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
     app.include_router(skills.router, prefix="/api/v1")
+    app.include_router(tools.router, prefix="/api/v1")
 
     # --- 统一在 _gateway 确定后创建 Web Channel 组件 ---
     from claw.channels.web.adapter import WebAdapter
@@ -109,6 +115,7 @@ def create_app(
     app.state.web_processor = web_processor
     app.state.expert_store = _expert_store
     app.state.agent_store = _agent_store
+    app.state.tools_registry = _tools_registry
 
     # 构建定时任务管理服务（lifespan 负责启停）
     _task_service = TaskService(
@@ -134,7 +141,11 @@ def _make_lifespan():
 
 
 def _build_default_gateway(
-    agent_store: SqliteAgentStore, session_store: SqliteSessionStore, *, skills_registry: SkillsRegistry | None = None
+    agent_store: SqliteAgentStore,
+    session_store: SqliteSessionStore,
+    *,
+    skills_registry: SkillsRegistry | None = None,
+    tools_registry: ToolsRegistry | None = None,
 ) -> tuple:
     """构建 Gateway 及其共享组件，供 AgentRunService 复用。
 
@@ -152,14 +163,15 @@ def _build_default_gateway(
     _skills_registry = skills_registry or SkillsRegistry()
 
     # 注册内置工具（read_file, write_file, run_command 等）
-    tools_registry = ToolsRegistry()
-    register_all(tools_registry, skills_registry=_skills_registry)
+    if tools_registry is None:
+        tools_registry = ToolsRegistry()
+        register_all(tools_registry, skills_registry=_skills_registry)
 
     # DeepSeekAgentRunner：通过 OpenAI 兼容接口调用 LLM
     runner = DeepSeekAgentRunner(tools_registry=tools_registry)
 
     # Memory Manager：context_builder 和 Gateway 共享同一实例
-    memory_manager = MemoryManager()
+    memory_manager = MemoryManager(vector_db_path="data/mini_claw.sqlite")
 
     # 包装 runner：上下文注入对所有 Runner 生效
     context_builder = RuntimeContextBuilder(

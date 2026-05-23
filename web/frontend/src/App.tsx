@@ -5,6 +5,7 @@ import SkillMarketplace from './components/SkillMarketplace';
 import ConversationList from './components/ConversationList';
 import ChatWindow from './components/ChatWindow';
 import TaskManager from './components/TaskManager';
+import AgentWorkbench from './components/AgentWorkbench';
 import type { Agent } from './api/client';
 
 export default function App() {
@@ -24,6 +25,14 @@ export default function App() {
               }
             >
               对话
+            </NavLink>
+            <NavLink
+              to="/agents"
+              className={({ isActive }) =>
+                `block px-3 py-2 rounded-lg mb-1 ${isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`
+              }
+            >
+              Agent 工作台
             </NavLink>
             <NavLink
               to="/experts"
@@ -57,6 +66,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/conversations" replace />} />
             <Route path="/experts" element={<ExpertMarketplace />} />
+            <Route path="/agents" element={<AgentWorkbench />} />
             <Route path="/skills" element={<SkillMarketplace />} />
             <Route path="/tasks" element={<TaskManager />} />
             <Route path="/conversations" element={<ConversationListWithNav />} />
