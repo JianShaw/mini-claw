@@ -1,182 +1,189 @@
 # Mini Claw
 
-Python implementation sketch for a small OpenClaw-style chat app with multi-session support.
+A mini **OpenClaw-style agent runtime** with CLI and Web UI — built as a hands-on project for learning AI application development.
 
-## Run The Chat App
+> [中文版](README_CN.md)
 
-Start the local test chat:
+```
+Python 3.11+ | FastAPI | React + TypeScript | SQLite | OpenAI-compatible API
+```
 
-```powershell
+## What It Does
+
+Mini Claw is an **agent gateway** that orchestrates multi-session conversations, tool calling, expert routing, and scheduled tasks. It's not a chatbot wrapper — it's a runtime that manages the full lifecycle of AI agents.
+
+Key capabilities:
+
+- **Agent Runtime** — Configurable agents with system prompts, tool sets, skills, and model parameters
+- **Tool Calling** — 12+ built-in tools (calculator, shell, file ops, web search, git, etc.) following OpenAI function-calling protocol
+- **MCP Bridge** — Connect external tool servers via Model Context Protocol
+- **Expert & Skill System** — Installable agent templates (Experts) and composable capability packs (Skills)
+- **Memory System** — Dual-layer memory (daily + long-term) with hybrid search (keyword + vector embedding)
+- **Scheduled Tasks** — Cron-based task scheduler with execution history
+- **Multi-Channel** — CLI and Web UI share the same gateway
+
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐
+│  CLI Chat   │     │   Web UI    │
+│  (local.py) │     │ (React+TS)  │
+└──────┬──────┘     └──────┬──────┘
+       │                   │
+       └───────┬───────────┘
+               │
+        ┌──────▼──────┐
+        │  Gateway    │   session lookup, agent dispatch, delivery
+        └──────┬──────┘
+               │
+    ┌──────────┼──────────────┐
+    │          │              │
+┌───▼───┐ ┌───▼────┐ ┌──────▼──────┐
+│ Agent │ │ Tool   │ │  Scheduler  │
+│Runtime│ │Registry│ │  (cron)     │
+└───┬───┘ └───┬────┘ └─────────────┘
+    │         │
+    │    ┌────┴────┬──────────┐
+    │    │         │          │
+    │ ┌──▼──┐ ┌───▼───┐ ┌───▼───┐
+    │ │Built│ │ MCP   │ │Skills │
+    │ │-in  │ │Bridge │ │Loader │
+    │ │Tools│ │       │ │       │
+    │ └─────┘ └───────┘ └───────┘
+    │
+    │  ┌──────────┐  ┌────────┐
+    └──► Memory   │  │Storage │
+       │(daily +  │  │(SQLite │
+       │ vector)  │  │+ JSONL)│
+       └──────────┘  └────────┘
+```
+
+## Quick Start
+
+**Prerequisites:** Python 3.11+, [uv](https://docs.astral.sh/uv/), Node.js 18+
+
+```bash
+# Install dependencies
+uv sync
+
+# Set your API key (DeepSeek or any OpenAI-compatible endpoint)
+cp .env.example .env
+# edit .env → DEEPSEEK_API_KEY=sk-xxx
+```
+
+### CLI Chat
+
+```bash
 uv run mini-claw-chat
 ```
 
-You can also run the module directly:
-
-```powershell
-uv run python -m chat.app
 ```
-
-### Debug & Logging
-
-All log levels are written to `logs/mini-claw.log` automatically. Use flags to control console output:
-
-```powershell
-# Normal: console quiet, logs go to file only
-uv run mini-claw-chat
-
-# Show all DEBUG logs on console too
-uv run mini-claw-chat --debug
-
-# Only show scheduler logs on console
-uv run mini-claw-chat --debug-only claw.scheduler
-```
-
-Then type messages in the terminal:
-
-```text
 Mini Claw chat
 Type /help for commands, /exit to quit.
 you> hello
 claw> echo: hello
 ```
 
-## Session Commands
+### Web UI
 
-The chat app supports managing multiple independent conversations:
+Terminal 1 — Backend (port 8000):
 
-| Command | Description |
-|---------|-------------|
-| `/new` | Create a new session and switch to it |
-| `/sessions` | List all sessions (active one marked with `*`) |
-| `/select <id>` | Switch to a specific session |
-| `/delete <id>` | Delete a session |
-| `/compact` | Compress current session context into a summary |
-| `/mcp` | Show MCP server connection status |
-| `/memory today` | View today's daily memory |
-| `/memory long` | View long-term memory |
-| `/memory update` | Force update today's daily memory from current session |
-| `/memory distill` | Extract long-term candidates from daily memory into MEMORY.md |
-| `/tasks` | List all scheduled tasks and their last execution result |
-| `/task run <name>` | Manually trigger a scheduled task |
-| `/help` | Show available commands |
-
-### Memory System
-
-Memory is managed at two levels:
-
-- **Daily memory** (`data/memory/daily/YYYY-MM-DD.md`) — short-term context, auto-updated every 3 user messages, or on-demand via `/memory update`.
-- **Long-term memory** (`data/memory/MEMORY.md`) — stable preferences and decisions, populated from daily candidates via `/memory distill`.
-
-Both are automatically injected into every LLM call as background context. User messages containing keywords like "prefer", "remember", "希望", "记住" are flagged as long-term candidates.
-
-Example workflow:
-
-```text
-you> tell me about sorting algorithms
-claw> ...
-you> /new
-New session: sess_a1b2c3d4
-you> /sessions
-  sess_e5f6g7h8 *
-  sess_a1b2c3d4
-you> /select sess_e5f6g7h8
-Switched to sess_e5f6g7h8
-you> /compact
-Compacted. Summary:
-  用户询问了排序算法...
-you> continue from where we left off
-claw> ...
-```
-
-## Web UI (Expert Marketplace)
-
-Mini Claw 提供基于 FastAPI + React 的 Web 界面，支持专家广场浏览、安装/卸载专家、多对话管理。
-
-### 启动
-
-需要两个终端分别运行后端和前端：
-
-**终端 1 — 后端** (port 8000)
-
-```powershell
+```bash
 uv run mini-claw-web
 ```
 
-**终端 2 — 前端** (port 5173，自动代理 `/api` 到后端)
+Terminal 2 — Frontend (port 5173):
 
-```powershell
+```bash
 cd web/frontend
-npm install   # 首次需要安装依赖
+npm install   # first time only
 npm run dev
 ```
 
-打开 http://localhost:5173 即可使用。
+Open http://localhost:5173
 
-### API 文档
-
-后端启动后，FastAPI 自动生成交互式 API 文档，无需额外配置：
-
-- **Swagger UI** — http://localhost:8000/docs
-- **ReDoc** — http://localhost:8000/redoc
-
-### 功能
-
-- **专家广场** — 浏览内置专家，一键安装并开始对话
-- **对话管理** — 创建、切换、删除对话，历史消息持久化到 SQLite
-- **SSE 流式聊天** — 打字机效果实时输出
+API docs available at http://localhost:8000/docs (Swagger UI)
 
 ## Project Structure
 
-```text
+```
 mini-claw/
-  chat/
-    app.py           # local CLI chat app with session commands
-  claw/
-    agent.py         # MiniClaw facade — composes all runtime modules
-    gateway.py       # RuntimeGateway — session/agent/delivery orchestration
-    session.py       # session management (InMemory, Jsonl stores)
-    deepseek.py      # DeepSeek agent runner with thinking mode
-    ports.py         # Protocol definitions (dependency inversion)
-    types.py         # shared data structures (Session, ChatMessage, etc.)
-    channels/
-      local.py       # CLI transport, adapter, delivery implementations
-    processor.py     # message pipeline (dedup, validate, filter)
-    runner.py        # EchoAgentRunner for testing
-  web/
-    backend/
-      app.py         # FastAPI 应用工厂 + DI 注入
-      channel.py     # Web 通道常量 + web_message()
-      server.py      # uvicorn 启动入口
-      routers/       # REST API 路由 (experts, agents, conversations, chat)
-      schemas/       # Pydantic 请求/响应模型
-    frontend/
-      src/           # React + TypeScript + Tailwind
-      vite.config.ts # Vite 配置 (proxy /api → localhost:8000)
-  docs/plans/        # design documents
-  tests/             # test suite
+├── chat/                    # CLI chat app (thin wrapper)
+│   └── app.py
+├── claw/                    # Core agent runtime
+│   ├── agent.py             # MiniClaw — top-level facade
+│   ├── gateway.py           # RuntimeGateway — routing & orchestration
+│   ├── agent_runtime/       # Agent lifecycle: config, resolver, store, factory
+│   ├── builtin_tools/       # 12+ tools (calculator, shell, web_search, ...)
+│   ├── channels/            # Transport adapters (CLI, Web)
+│   │   ├── local.py
+│   │   └── web/
+│   ├── expert/              # Expert template system (marketplace, store, registry)
+│   ├── mcp/                 # MCP server bridge (config, connection, tool proxy)
+│   ├── memory/              # Dual-layer memory (daily, long-term, vector search)
+│   ├── scheduler/           # Cron-based task scheduler with history
+│   ├── skills/              # Skill packs (loader, marketplace, registry)
+│   ├── storage/             # SQLite schema, migrations, session store
+│   ├── ports.py             # Protocol definitions (dependency inversion)
+│   ├── tools.py             # ToolsRegistry (OpenAI function-calling format)
+│   └── types.py             # Shared data structures
+├── web/
+│   ├── backend/             # FastAPI app, routers, schemas, services
+│   └── frontend/            # React + TypeScript + Tailwind
+├── tests/                   # 70+ test files
+└── docs/plans/              # Design documents
 ```
 
-## Design
+## Technical Highlights
 
-### Multi-Session Architecture
+### Agent Runtime
 
-Sessions use a two-level hierarchy:
+Agents are created from Expert templates and stored as independent runtime configs. Each agent carries its own system prompt, enabled tools, skills, and tunable parameters (`temperature`). The `AgentResolver` resolves an agent ID to a fully-wired runtime ready for execution.
 
-- **peer_key** (`channel:account_id:peer_id`) — groups all sessions for a user
-- **session_id** (`sess_xxx`) — identifies an individual conversation
+### Tool Calling
 
-Each user has one active session. Messages are routed to the active session automatically.
+`ToolsRegistry` follows the OpenAI function-calling protocol. Built-in tools are split into **safe** (calculator, time, file search) and **dangerous** (shell, python_test) categories. The MCP bridge transparently proxies external tool servers into the same registry.
+
+### Memory System
+
+Two-layer architecture:
+- **Daily memory** — auto-updated every N messages, deterministic extraction (no LLM cost)
+- **Long-term memory** — distilled from daily candidates via `/memory distill`
+- **Hybrid search** — keyword matching + FastEmbed vector similarity over `sqlite-vec`
+
+### Multi-Channel
+
+Both CLI and Web go through the same `RuntimeGateway`. Channel adapters handle transport differences (stdio vs SSE), while the gateway remains channel-agnostic.
 
 ### Storage
 
-Sessions persist to disk as JSONL files:
+Unified SQLite database (`data/mini_claw.sqlite`) with schema versioning and WAL mode. Session history also supports append-only JSONL for backward compatibility.
 
-```text
-data/sessions/
-  index.json            # peer → {active, sessions: {id: metadata}}
-  sess_a1b2c3d4.jsonl   # one ChatMessage per line (append-only)
+## Testing
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run specific modules
+uv run pytest tests/test_agent_runtime.py tests/test_memory.py -v
 ```
 
-### Context Compression
+70+ test files covering all core modules: agent runtime, expert/skill systems, MCP bridge, memory, scheduler, gateway, web APIs, and integration flows.
 
-`/compact` calls the LLM to generate a summary of the conversation. The summary is stored in session metadata, and in-memory history is cleared. The LLM context becomes: `system(summary) + recent messages`. Original JSONL records are preserved on disk.
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Agent Runtime | Python 3.11, dataclasses, async/await |
+| LLM API | OpenAI-compatible (DeepSeek) with tool calling |
+| Backend | FastAPI, Pydantic, SSE-Starlette |
+| Frontend | React, TypeScript, Tailwind CSS, Vite |
+| Storage | SQLite (WAL mode, sqlite-vec for vector search) |
+| Embedding | FastEmbed (local, no API key needed) |
+| MCP | Model Context Protocol client |
+| Tooling | uv, pytest, pytest-asyncio |
+
+## License
+
+MIT
