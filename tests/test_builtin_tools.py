@@ -221,13 +221,13 @@ async def test_shell_rejects_path_in_command() -> None:
     assert "Error" in result3
 
 
-# --- file_ops (workspace root 边界) ---
+# --- file_ops (sandbox root 边界) ---
 
 
 @pytest.mark.asyncio
 async def test_file_write_and_read(tmp_path) -> None:
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
     file_path = "test.txt"
 
     write_result = await registry.execute("file_write", {"path": file_path, "content": "hello world"})
@@ -240,7 +240,7 @@ async def test_file_write_and_read(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_file_read_not_found(tmp_path) -> None:
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
     result = await registry.execute("file_read", {"path": "nonexistent.txt"})
     assert "Error" in result
 
@@ -248,7 +248,7 @@ async def test_file_read_not_found(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_file_write_creates_parent_dirs(tmp_path) -> None:
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_write", {"path": "sub/dir/test.txt", "content": "nested"})
     assert "OK" in result
@@ -260,7 +260,7 @@ async def test_file_write_creates_parent_dirs(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_file_list_directory(tmp_path) -> None:
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     (tmp_path / "file1.txt").write_text("a")
     (tmp_path / "file2.txt").write_text("bb")
@@ -275,7 +275,7 @@ async def test_file_list_directory(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_file_list_not_directory(tmp_path) -> None:
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
     (tmp_path / "file.txt").write_text("test")
 
     result = await registry.execute("file_list", {"path": "file.txt"})
@@ -284,13 +284,13 @@ async def test_file_list_not_directory(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_file_ops_reject_path_escape(tmp_path) -> None:
-    """路径逃逸 workspace root 应被拒绝。"""
+    """路径逃逸 sandbox root 应被拒绝。"""
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_read", {"path": "../../etc/passwd"})
     assert "Error" in result
-    assert "escapes workspace" in result
+    assert "escapes sandbox" in result
 
     write_result = await registry.execute("file_write", {"path": "../../../tmp/evil.txt", "content": "bad"})
     assert "Error" in write_result
@@ -298,8 +298,8 @@ async def test_file_ops_reject_path_escape(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_file_ops_reject_prefix_bypass(tmp_path) -> None:
-    """路径前缀绕过应被拒绝：workspace=/tmp/app 时 ../app2/evil 不应通过。"""
-    # 创建 /tmp/app 目录作为 workspace，/tmp/app2 作为诱饵
+    """路径前缀绕过应被拒绝：sandbox=/tmp/app 时 ../app2/evil 不应通过。"""
+    # 创建 /tmp/app 目录作为 sandbox，/tmp/app2 作为诱饵
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     app2_dir = tmp_path / "app2"
@@ -307,12 +307,12 @@ async def test_file_ops_reject_prefix_bypass(tmp_path) -> None:
     (app2_dir / "evil.txt").write_text("secret")
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(app_dir))
+    register_file_ops(registry, sandbox_root=str(app_dir))
 
     # 尝试通过 ../app2/evil.txt 绕过前缀检查
     result = await registry.execute("file_read", {"path": "../app2/evil.txt"})
     assert "Error" in result
-    assert "escapes workspace" in result
+    assert "escapes sandbox" in result
 
     write_result = await registry.execute("file_write", {"path": "../app2/pwned.txt", "content": "bad"})
     assert "Error" in write_result
@@ -329,7 +329,7 @@ async def test_file_write_rejects_symlink(tmp_path) -> None:
         pytest.skip("symlink creation not supported on this system")
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_write", {"path": "link.txt", "content": "bad"})
     assert "Error" in result
@@ -348,7 +348,7 @@ async def test_file_read_rejects_symlink(tmp_path) -> None:
         pytest.skip("symlink creation not supported on this system")
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_read", {"path": "link.txt"})
     assert "Error" in result
@@ -359,7 +359,7 @@ async def test_file_read_rejects_symlink(tmp_path) -> None:
 async def test_file_read_truncates_large_file(tmp_path) -> None:
     """大文件应先检查 stat 大小再截断，不应完整读入内存。"""
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     # 创建 > 1MB 的文件
     big_content = "x" * 1_100_000
@@ -404,7 +404,7 @@ async def test_file_search_glob_finds_files(tmp_path) -> None:
     (tmp_path / "world.py").write_text("world")
 
     registry = ToolsRegistry()
-    register_file_search(registry, workspace_root=str(tmp_path))
+    register_file_search(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_search", {"glob": "*.txt"})
     assert "hello.txt" in result
@@ -419,7 +419,7 @@ async def test_file_search_keyword_finds_content(tmp_path) -> None:
     (tmp_path / "code.py").write_text("def hello():\n    return 'world'\n")
 
     registry = ToolsRegistry()
-    register_file_search(registry, workspace_root=str(tmp_path))
+    register_file_search(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_search", {"glob": "*.py", "keyword": "world"})
     assert "code.py" in result
@@ -432,7 +432,7 @@ async def test_file_search_no_results(tmp_path) -> None:
     from claw.builtin_tools.file_search import register as register_file_search
 
     registry = ToolsRegistry()
-    register_file_search(registry, workspace_root=str(tmp_path))
+    register_file_search(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_search", {"glob": "*.nonexistent"})
     assert "No files" in result
@@ -447,7 +447,7 @@ async def test_file_search_respects_max_results(tmp_path) -> None:
         (tmp_path / f"file_{i}.txt").write_text(f"content {i}")
 
     registry = ToolsRegistry()
-    register_file_search(registry, workspace_root=str(tmp_path))
+    register_file_search(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_search", {"glob": "*.txt", "max_results": 2})
     lines = [l for l in result.strip().split("\n") if l.strip()]
@@ -465,7 +465,7 @@ async def test_file_patch_replaces_single_occurrence(tmp_path) -> None:
     (tmp_path / "test.py").write_text("def hello():\n    return 'old'\n")
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_patch", {
         "path": "test.py",
@@ -484,7 +484,7 @@ async def test_file_patch_rejects_multiple_without_flag(tmp_path) -> None:
     (tmp_path / "test.py").write_text("aaa bbb aaa")
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_patch", {
         "path": "test.py",
@@ -503,7 +503,7 @@ async def test_file_patch_replaces_all_with_flag(tmp_path) -> None:
     (tmp_path / "test.py").write_text("aaa bbb aaa")
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_patch", {
         "path": "test.py",
@@ -523,7 +523,7 @@ async def test_file_patch_rejects_empty_old_text(tmp_path) -> None:
     (tmp_path / "test.py").write_text("hello")
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_patch", {
         "path": "test.py",
@@ -542,7 +542,7 @@ async def test_file_patch_rejects_not_found(tmp_path) -> None:
     (tmp_path / "test.py").write_text("hello")
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_patch", {
         "path": "test.py",
@@ -559,7 +559,7 @@ async def test_file_patch_rejects_path_escape(tmp_path) -> None:
     from claw.builtin_tools.file_patch import register as register_file_patch
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_patch", {
         "path": "../../etc/passwd",
@@ -578,7 +578,7 @@ async def test_file_write_rejects_protected_claw_dir(tmp_path) -> None:
     from claw.builtin_tools.file_ops import register as register_file_ops
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     (tmp_path / "claw").mkdir()
     result = await registry.execute("file_write", {
@@ -595,7 +595,7 @@ async def test_file_write_rejects_protected_tests_dir(tmp_path) -> None:
     from claw.builtin_tools.file_ops import register as register_file_ops
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     (tmp_path / "tests").mkdir()
     result = await registry.execute("file_write", {
@@ -612,7 +612,7 @@ async def test_file_write_allows_data_dir(tmp_path) -> None:
     from claw.builtin_tools.file_ops import register as register_file_ops
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("file_write", {
         "path": "data/test.json",
@@ -627,7 +627,7 @@ async def test_file_patch_rejects_protected_claw_dir(tmp_path) -> None:
     from claw.builtin_tools.file_patch import register as register_file_patch
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     (tmp_path / "claw").mkdir()
     (tmp_path / "claw" / "test.py").write_text("old code", encoding="utf-8")
@@ -646,7 +646,7 @@ async def test_file_patch_rejects_protected_tests_dir(tmp_path) -> None:
     from claw.builtin_tools.file_patch import register as register_file_patch
 
     registry = ToolsRegistry()
-    register_file_patch(registry, workspace_root=str(tmp_path))
+    register_file_patch(registry, sandbox_root=str(tmp_path))
 
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_x.py").write_text("old", encoding="utf-8")
@@ -665,7 +665,7 @@ async def test_file_read_not_blocked_by_protection(tmp_path) -> None:
     from claw.builtin_tools.file_ops import register as register_file_ops
 
     registry = ToolsRegistry()
-    register_file_ops(registry, workspace_root=str(tmp_path))
+    register_file_ops(registry, sandbox_root=str(tmp_path))
 
     (tmp_path / "claw").mkdir()
     (tmp_path / "claw" / "test.py").write_text("source code", encoding="utf-8")
@@ -730,7 +730,7 @@ async def test_git_status_in_repo(tmp_path) -> None:
     from claw.builtin_tools.git_tool import register as register_git
 
     registry = ToolsRegistry()
-    register_git(registry, workspace_root=str(tmp_path))
+    register_git(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("git_status", {})
     assert "test.txt" in result
@@ -742,7 +742,7 @@ async def test_git_not_a_repo(tmp_path) -> None:
     from claw.builtin_tools.git_tool import register as register_git
 
     registry = ToolsRegistry()
-    register_git(registry, workspace_root=str(tmp_path))
+    register_git(registry, sandbox_root=str(tmp_path))
 
     result = await registry.execute("git_status", {})
     assert "Error" in result

@@ -99,9 +99,19 @@ class ToolsRegistry:
                 return name in enabled_tools
             return True
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> Any:
-        """按名称查找并执行工具 handler。找不到时抛出 KeyError。"""
+    async def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        **extra_kwargs: Any,
+    ) -> Any:
+        """按名称查找并执行工具 handler。找不到时抛出 KeyError。
+
+        extra_kwargs 会合并到 arguments 中，以 `_` 前缀的键传递运行时上下文
+        （如 _sandbox_root），不会出现在 LLM 的工具 schema 中。
+        """
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"tool not found: {name}")
-        return await tool.handler(arguments)
+        merged = {**arguments, **extra_kwargs} if extra_kwargs else arguments
+        return await tool.handler(merged)

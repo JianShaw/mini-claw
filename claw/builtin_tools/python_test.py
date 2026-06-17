@@ -1,4 +1,4 @@
-"""Python 测试运行工具：在 workspace 内执行白名单 pytest 命令。
+"""Python 测试运行工具：在 sandbox 内执行白名单 pytest 命令。
 
 安全策略：
 - 使用 create_subprocess_exec 避免注入
@@ -42,17 +42,17 @@ def _validate_test_args(args_str: str) -> str | None:
 def register(
     registry: ToolsRegistry,
     *,
-    workspace_root: str | None = None,
+    sandbox_root: str | None = None,
     default_timeout: int = 120,
 ) -> None:
     """注册 Python 测试运行工具。
 
     Args:
         registry: 工具注册表
-        workspace_root: 工作目录，pytest 在此目录下运行
+        sandbox_root: 工作目录，pytest 在此目录下运行
         default_timeout: 默认超时秒数
     """
-    root = Path(workspace_root or ".").resolve()
+    root = Path(sandbox_root or ".").resolve()
 
     async def handler(args: dict[str, Any]) -> str:
         test_args = args.get("test_args", "")
@@ -95,7 +95,7 @@ def register(
 
     registry.register(Tool(
         name="python_test",
-        description="Run pytest test commands within the workspace. Only whitelisted test arguments are allowed.",
+        description="Run pytest test commands within the sandbox. Only whitelisted test arguments are allowed.",
         handler=handler,
         parameters={
             "type": "object",

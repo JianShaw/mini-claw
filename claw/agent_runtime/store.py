@@ -108,7 +108,7 @@ class SqliteAgentStore:
             enabled_mcp_servers=[],
             model_config={"provider": "deepseek", "name": "deepseek-chat"},
             memory_config={"enabled": True},
-            sandbox_config={"workspace_required": True},
+            sandbox_config={"workspace_required": True, "sandbox_root": "data/sandboxes/default-agent"},
             created_at=_now_iso(),
             updated_at=_now_iso(),
         )

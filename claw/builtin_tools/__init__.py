@@ -31,7 +31,7 @@ def register_all(registry: ToolsRegistry, *, skills_registry: Any = None) -> Non
     register_calculator(registry)
     register_time(registry)
 
-    # 文件操作：限定当前工作目录为 workspace root
+    # 文件操作：限定当前工作目录为 sandbox root
     register_file_ops(registry)
     register_file_search(registry)
     register_file_patch(registry)

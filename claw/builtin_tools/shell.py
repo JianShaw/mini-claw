@@ -28,6 +28,9 @@ def _make_handler(
         command = args["command"]
         cmd_timeout = args.get("timeout", timeout)
 
+        # 运行时 sandbox 优先于注册时 cwd，作为命令执行的工作目录
+        effective_cwd = args.get("_sandbox_root") or work_dir
+
         # 使用 shlex.split 正确解析命令（处理引号等），避免 shell 元字符注入
         try:
             parts = shlex.split(command)
@@ -49,9 +52,9 @@ def _make_handler(
             if cmd_name not in allowed:
                 return f"Error: command '{cmd_name}' not in allowed list: {allowed}"
 
-        # Windows 上 echo/pwd/sleep 可能不是独立可执行文件。这里用安全的
+        # Windows 下 echo/pwd/sleep 可能不是独立可执行文件。这里用安全的
         # Python 内建模拟它们，既保持跨平台测试稳定，也不启用 shell。
-        builtin_result = await _run_portable_builtin(parts, work_dir, cmd_timeout)
+        builtin_result = await _run_portable_builtin(parts, effective_cwd, cmd_timeout)
         if builtin_result is not None:
             return builtin_result
 
@@ -61,7 +64,7 @@ def _make_handler(
                 *parts,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=work_dir,
+                cwd=effective_cwd,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=cmd_timeout

@@ -62,17 +62,17 @@ async def _git_command(
 def register(
     registry: ToolsRegistry,
     *,
-    workspace_root: str | None = None,
+    sandbox_root: str | None = None,
     default_timeout: int = 10,
 ) -> None:
     """注册 Git 只读工具。
 
     Args:
         registry: 工具注册表
-        workspace_root: git 仓库根目录
+        sandbox_root: git 仓库根目录
         default_timeout: 默认超时秒数
     """
-    cwd = workspace_root or "."
+    cwd = sandbox_root or "."
 
     async def git_status_handler(args: dict[str, Any]) -> str:
         return await _git_command("status", cwd=cwd, timeout=default_timeout)

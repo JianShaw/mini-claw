@@ -18,18 +18,23 @@ from claw.tools import Tool, ToolsRegistry
 def register(
     registry: ToolsRegistry,
     *,
-    workspace_root: str | None = None,
+    sandbox_root: str | None = None,
 ) -> None:
     """注册文件补丁工具。
 
     Args:
         registry: 工具注册表
-        workspace_root: 文件操作的根目录边界，默认为当前工作目录
+        sandbox_root: 文件操作的根目录边界，默认为当前工作目录。
+            运行时可通过 args["_sandbox_root"] 覆盖（由 AgentRunner 注入）。
     """
-    root = Path(workspace_root or ".").resolve()
+    root = Path(sandbox_root or ".").resolve()
 
     async def handler(args: dict[str, Any]) -> str:
-        result = _safe_path(args["path"], root)
+        # 运行时 sandbox 优先于注册时默认值
+        dynamic = args.get("_sandbox_root")
+        ws = Path(dynamic).resolve() if dynamic else root
+
+        result = _safe_path(args["path"], ws)
         if isinstance(result, str):
             return result
         path = result
@@ -38,23 +43,23 @@ def register(
         new_text = args["new_text"]
         replace_all = args.get("replace_all", False)
 
-        if _contains_symlink(path, root):
+        if _contains_symlink(path, ws):
             return f"Error: symlink not allowed: {path}"
 
-        if _is_protected_path(path, root):
-            return f"Error: modifying source code is not allowed: {path.relative_to(root)}"
+        if _is_protected_path(path, ws):
+            return f"Error: modifying source code is not allowed: {path.relative_to(ws)}"
 
         if not old_text:
             return "Error: old_text cannot be empty"
 
         try:
             if not path.exists():
-                return f"Error: file not found: {path.relative_to(root)}"
+                return f"Error: file not found: {path.relative_to(ws)}"
             content = path.read_text(encoding="utf-8")
 
             count = content.count(old_text)
             if count == 0:
-                return f"Error: old_text not found in {path.relative_to(root)}"
+                return f"Error: old_text not found in {path.relative_to(ws)}"
             if count > 1 and not replace_all:
                 return f"Error: old_text found {count} times; set replace_all=true to replace all"
 
@@ -64,7 +69,7 @@ def register(
                 new_content = content.replace(old_text, new_text, 1)
 
             path.write_text(new_content, encoding="utf-8")
-            return f"OK: replaced {count if replace_all else 1} occurrence(s) in {path.relative_to(root)}"
+            return f"OK: replaced {count if replace_all else 1} occurrence(s) in {path.relative_to(ws)}"
 
         except PermissionError:
             return f"Error: permission denied: {path}"
@@ -78,7 +83,7 @@ def register(
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path relative to workspace root"},
+                "path": {"type": "string", "description": "File path relative to sandbox root"},
                 "old_text": {"type": "string", "description": "Exact text to find and replace"},
                 "new_text": {"type": "string", "description": "Replacement text"},
                 "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"},

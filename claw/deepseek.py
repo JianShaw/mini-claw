@@ -55,6 +55,16 @@ class DeepSeekAgentRunner:
             "reasoning_effort": "high",
         }
 
+    def _tool_extra_kwargs(self, session: Session) -> dict[str, Any]:
+        """从 RuntimeProfile 提取运行时上下文，注入到工具调用参数中。"""
+        profile = session.metadata.get("agent_runtime_profile")
+        if not profile:
+            return {}
+        sandbox_root = profile.get("sandbox_root", "")
+        if not sandbox_root:
+            return {}
+        return {"_sandbox_root": sandbox_root}
+
     def _has_tools(self) -> bool:
         """检查是否有可用的工具。"""
         return self._tools_registry is not None and bool(self._tools_registry.list())
@@ -178,6 +188,7 @@ class DeepSeekAgentRunner:
         session.history.append(ChatMessage(role="user", content=message.text, ts=int(time() * 1000)))
         messages = self._build_messages(session)
         kwargs = self._build_kwargs(messages, session)
+        tool_ctx = self._tool_extra_kwargs(session)
 
         # 工具执行循环：LLM 返回 tool_calls 时执行工具，将结果送回 LLM
         iterations = 0
@@ -217,7 +228,7 @@ class DeepSeekAgentRunner:
             for tc in msg.tool_calls:
                 try:
                     args = json.loads(tc.function.arguments)
-                    result = await self._tools_registry.execute(tc.function.name, args)  # type: ignore[union-attr]
+                    result = await self._tools_registry.execute(tc.function.name, args, **tool_ctx)  # type: ignore[union-attr]
                     result_str = str(result)
                 except Exception as e:
                     result_str = f"Tool error: {type(e).__name__}: {e}"
@@ -246,6 +257,7 @@ class DeepSeekAgentRunner:
         支持工具调用：当 LLM 请求工具调用时，执行工具后重新调用 API 继续流式输出。"""
         session.history.append(ChatMessage(role="user", content=message.text, ts=int(time() * 1000)))
         messages = self._build_messages(session)
+        tool_ctx = self._tool_extra_kwargs(session)
 
         iterations = 0
         while iterations < self._max_tool_iterations:
@@ -318,7 +330,7 @@ class DeepSeekAgentRunner:
             for tc in tool_calls_list:
                 try:
                     args = json.loads(tc["function"]["arguments"])
-                    result = await self._tools_registry.execute(tc["function"]["name"], args)  # type: ignore[union-attr]
+                    result = await self._tools_registry.execute(tc["function"]["name"], args, **tool_ctx)  # type: ignore[union-attr]
                     result_str = str(result)
                 except Exception as e:
                     result_str = f"Tool error: {type(e).__name__}: {e}"

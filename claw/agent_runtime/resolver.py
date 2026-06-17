@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from claw.agent_runtime.store import SqliteAgentStore
 from claw.agent_runtime.types import AgentConfig, RuntimeProfile
+
+# 默认 sandbox 根目录（相对于项目根）
+_DEFAULT_SANDBOX_BASE = "data/sandboxes"
 
 
 class AgentResolver:
@@ -54,8 +59,28 @@ class AgentResolver:
         return self._agent_store.ensure_default()
 
     @staticmethod
-    def _to_profile(agent: AgentConfig) -> RuntimeProfile:
-        """将 AgentConfig 转为 RuntimeProfile（深拷贝可变字段）。"""
+    def _resolve_sandbox_root(agent: AgentConfig) -> str:
+        """从 sandbox_config 解析 sandbox 绝对路径。
+
+        优先级：sandbox_config.sandbox_root > data/sandboxes/{agent_id}
+        相对路径基于当前工作目录解析，自动创建目录。
+        """
+        sandbox = agent.sandbox_config
+        configured = sandbox.get("sandbox_root", "")
+
+        if configured:
+            p = Path(configured)
+        else:
+            # 默认 sandbox：data/sandboxes/{agent_id}
+            p = Path(_DEFAULT_SANDBOX_BASE) / agent.id
+
+        # 相对路径基于 CWD 解析
+        resolved = p.resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return str(resolved)
+
+    def _to_profile(self, agent: AgentConfig) -> RuntimeProfile:
+        """将 AgentConfig 转为 RuntimeProfile（深拷贝可变字段 + 解析 sandbox）。"""
         return RuntimeProfile(
             agent_id=agent.id,
             system_prompt=agent.system_prompt,
@@ -65,4 +90,5 @@ class AgentResolver:
             enabled_mcp_servers=list(agent.enabled_mcp_servers),
             memory_config=dict(agent.memory_config),
             sandbox_config=dict(agent.sandbox_config),
+            sandbox_root=self._resolve_sandbox_root(agent),
         )

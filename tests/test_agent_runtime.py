@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from claw.agent_runtime.types import AgentConfig, RuntimeProfile
 from claw.expert.store import SqliteExpertStore
 from claw.expert.types import Expert, ExpertMeta
 from claw.storage.sqlite import get_connection, init_db
+from claw.tools import Tool, ToolsRegistry
 
 
 @pytest.fixture
@@ -88,9 +90,10 @@ class TestRuntimeProfile:
         assert profile.model_config == {}
         assert profile.enabled_skills == []
 
-    def test_from_agent(self) -> None:
+    def test_from_agent(self, agent_store: SqliteAgentStore) -> None:
         agent = _make_agent()
-        profile = AgentResolver._to_profile(agent)
+        resolver = AgentResolver(agent_store)
+        profile = resolver._to_profile(agent)
         assert profile.agent_id == agent.id
         assert profile.system_prompt == agent.system_prompt
         assert profile.enabled_tools == agent.enabled_tools
@@ -285,3 +288,190 @@ class TestAgentResolver:
         resolver = AgentResolver(agent_store)
         profile = resolver.resolve(None)
         assert profile.system_prompt == "Modified default"
+
+
+# ---- Sandbox ----
+
+class TestSandboxRoot:
+    """测试 agent sandbox 的解析和隔离。"""
+
+    def test_default_workspace_path(self, agent_store: SqliteAgentStore, tmp_path: Path) -> None:
+        """未配置 sandbox_root 时自动分配 data/sandboxes/{agent_id}。"""
+        agent = _make_agent(sandbox_config={})
+        resolver = AgentResolver(agent_store)
+        profile = resolver._to_profile(agent)
+        assert profile.sandbox_root.endswith(f"data{os.sep}sandboxes{os.sep}{agent.id}")
+        assert Path(profile.sandbox_root).is_dir()
+
+    def test_configured_sandbox_root(self, agent_store: SqliteAgentStore, tmp_path: Path) -> None:
+        """sandbox_config.sandbox_root 优先于默认路径。"""
+        custom = str(tmp_path / "my-workspace")
+        agent = _make_agent(sandbox_config={"sandbox_root": custom})
+        resolver = AgentResolver(agent_store)
+        profile = resolver._to_profile(agent)
+        assert profile.sandbox_root == str(Path(custom).resolve())
+        assert Path(profile.sandbox_root).is_dir()
+
+    def test_workspace_dir_auto_created(self, agent_store: SqliteAgentStore, tmp_path: Path) -> None:
+        """sandbox 目录不存在时自动创建。"""
+        ws = tmp_path / "auto-created-ws"
+        assert not ws.exists()
+        agent = _make_agent(sandbox_config={"sandbox_root": str(ws)})
+        resolver = AgentResolver(agent_store)
+        profile = resolver._to_profile(agent)
+        assert Path(profile.sandbox_root).is_dir()
+
+    def test_resolve_populates_sandbox_root(self, agent_store: SqliteAgentStore) -> None:
+        """resolve() 返回的 RuntimeProfile 包含 sandbox_root。"""
+        agent_store.save(_make_agent(sandbox_config={}))
+        resolver = AgentResolver(agent_store)
+        profile = resolver.resolve("ag_test")
+        assert profile.sandbox_root != ""
+        assert Path(profile.sandbox_root).is_dir()
+
+    def test_default_agent_has_workspace(self, agent_store: SqliteAgentStore) -> None:
+        """default-agent 自动获得 sandbox。"""
+        resolver = AgentResolver(agent_store)
+        profile = resolver.resolve(None)
+        assert profile.sandbox_root != ""
+        assert Path(profile.sandbox_root).is_dir()
+
+    def test_factory_creates_workspace(
+        self, expert_store: SqliteExpertStore, agent_store: SqliteAgentStore,
+    ) -> None:
+        """AgentFactory 从 Expert 创建 Agent 时自动分配 sandbox。"""
+        _seed_expert(expert_store)
+        factory = AgentFactory(expert_store, agent_store)
+        agent = factory.create_from_expert("code-helper")
+        assert "sandbox_root" in agent.sandbox_config
+        assert agent.sandbox_config["sandbox_root"] != ""
+        ws_path = Path(agent.sandbox_config["sandbox_root"]).resolve()
+        assert ws_path.is_dir()
+
+
+class TestToolsSandboxIsolation:
+    """测试工具在动态 sandbox 下的隔离行为。"""
+
+    @pytest.mark.asyncio
+    async def test_file_ops_use_dynamic_workspace(self, tmp_path: Path) -> None:
+        """file_ops 工具使用 _sandbox_root 参数，而非注册时的默认值。"""
+        from claw.builtin_tools.file_ops import register as register_file_ops
+
+        # 注册时使用默认 sandbox（当前目录）
+        registry = ToolsRegistry()
+        register_file_ops(registry)
+
+        # 动态 sandbox 下写入文件
+        ws = tmp_path / "agent-ws"
+        ws.mkdir()
+        result = await registry.execute(
+            "file_write",
+            {"path": "test.txt", "content": "hello"},
+            _sandbox_root=str(ws),
+        )
+        assert "OK" in result
+        assert (ws / "test.txt").read_text() == "hello"
+
+        # 读取文件也使用动态 sandbox
+        content = await registry.execute(
+            "file_read",
+            {"path": "test.txt"},
+            _sandbox_root=str(ws),
+        )
+        assert "hello" in content
+
+    @pytest.mark.asyncio
+    async def test_file_ops_fallback_without_dynamic_workspace(self, tmp_path: Path) -> None:
+        """未注入 _sandbox_root 时回退到注册时的 sandbox_root。"""
+        from claw.builtin_tools.file_ops import register as register_file_ops
+
+        ws = tmp_path / "static-ws"
+        ws.mkdir()
+        registry = ToolsRegistry()
+        register_file_ops(registry, sandbox_root=str(ws))
+
+        result = await registry.execute(
+            "file_write",
+            {"path": "test.txt", "content": "static"},
+        )
+        assert "OK" in result
+        assert (ws / "test.txt").read_text() == "static"
+
+    @pytest.mark.asyncio
+    async def test_file_search_uses_dynamic_workspace(self, tmp_path: Path) -> None:
+        """file_search 工具使用动态 sandbox。"""
+        from claw.builtin_tools.file_search import register as register_file_search
+
+        ws = tmp_path / "search-ws"
+        ws.mkdir()
+        (ws / "findme.txt").write_text("hello world")
+
+        registry = ToolsRegistry()
+        register_file_search(registry)
+
+        result = await registry.execute(
+            "file_search",
+            {"glob": "*.txt"},
+            _sandbox_root=str(ws),
+        )
+        assert "findme.txt" in result
+
+    @pytest.mark.asyncio
+    async def test_file_patch_uses_dynamic_workspace(self, tmp_path: Path) -> None:
+        """file_patch 工具使用动态 sandbox。"""
+        from claw.builtin_tools.file_patch import register as register_file_patch
+
+        ws = tmp_path / "patch-ws"
+        ws.mkdir()
+        (ws / "code.py").write_text("x = 1\ny = 2\n")
+
+        registry = ToolsRegistry()
+        register_file_patch(registry)
+
+        result = await registry.execute(
+            "file_patch",
+            {"path": "code.py", "old_text": "x = 1", "new_text": "x = 42"},
+            _sandbox_root=str(ws),
+        )
+        assert "OK" in result
+        assert (ws / "code.py").read_text() == "x = 42\ny = 2\n"
+
+    @pytest.mark.asyncio
+    async def test_file_ops_path_escape_blocked(self, tmp_path: Path) -> None:
+        """动态 sandbox 下路径逃逸仍被阻止。"""
+        from claw.builtin_tools.file_ops import register as register_file_ops
+
+        ws = tmp_path / "safe-ws"
+        ws.mkdir()
+
+        registry = ToolsRegistry()
+        register_file_ops(registry)
+
+        result = await registry.execute(
+            "file_read",
+            {"path": "../../etc/passwd"},
+            _sandbox_root=str(ws),
+        )
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_tools_registry_execute_merges_kwargs(self) -> None:
+        """ToolsRegistry.execute(**extra_kwargs) 合并到 tool args 中。"""
+        registry = ToolsRegistry()
+
+        async def echo_handler(args: dict) -> dict:
+            return args
+
+        registry.register(Tool(
+            name="echo",
+            description="echo args",
+            handler=echo_handler,
+        ))
+
+        result = await registry.execute(
+            "echo",
+            {"a": 1},
+            _sandbox_root="/tmp/ws",
+        )
+        assert result["a"] == 1
+        assert result["_sandbox_root"] == "/tmp/ws"

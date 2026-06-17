@@ -46,3 +46,4 @@ class RuntimeProfile:
     enabled_mcp_servers: list[str] = field(default_factory=list)
     memory_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
+    sandbox_root: str = ""                # 解析后的绝对路径，工具执行时使用

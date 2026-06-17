@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from claw.agent_runtime.store import SqliteAgentStore
@@ -12,6 +13,19 @@ from claw.expert.store import SqliteExpertStore
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_sandbox(agent_id: str, sandbox_config: dict) -> None:
+    """确保 agent 的 sandbox 目录存在。
+
+    如果 sandbox_config 未指定 sandbox_root，自动分配
+    data/sandboxes/{agent_id} 并写回 sandbox_config。
+    """
+    if not sandbox_config.get("sandbox_root"):
+        sandbox_config["sandbox_root"] = f"data/sandboxes/{agent_id}"
+
+    p = Path(sandbox_config["sandbox_root"]).resolve()
+    p.mkdir(parents=True, exist_ok=True)
 
 
 class AgentFactory:
@@ -53,8 +67,13 @@ class AgentFactory:
         if existing is not None:
             return existing
 
+        agent_id = f"ag_{uuid4().hex[:12]}"
+        sandbox = dict(expert.default_sandbox)
+        # 自动分配并创建 sandbox 目录
+        _ensure_sandbox(agent_id, sandbox)
+
         agent = AgentConfig(
-            id=f"ag_{uuid4().hex[:12]}",
+            id=agent_id,
             name=agent_name or expert.display_name,
             source_expert=expert.name,
             system_prompt=expert.system_prompt,        # 复制，非引用
@@ -63,7 +82,7 @@ class AgentFactory:
             enabled_mcp_servers=list(expert.default_mcp_servers),
             model_config=dict(expert.default_model),
             memory_config=dict(expert.default_memory),
-            sandbox_config=dict(expert.default_sandbox),
+            sandbox_config=sandbox,
             created_at=_now_iso(),
             updated_at=_now_iso(),
         )

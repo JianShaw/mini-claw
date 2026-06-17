@@ -15,6 +15,7 @@ default_memory:
   enabled: true
 default_sandbox:
   workspace_required: false
+  sandbox_root: ""
 meta:
   version: "0.1.0"
   author: mini-claw
